@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 const browser = await chromium.launch({
-  executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
   args: ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--no-sandbox'],
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });

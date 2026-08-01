@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
-const OUT = '/tmp/claude-0/-home-user-Truck/4c5628ff-a790-5a54-b19b-c32b20d2aa92/scratchpad';
+const OUT = './shots';
 const browser = await chromium.launch({
-  executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
   args: ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--no-sandbox'],
 });
 const page = await browser.newPage({ viewport: { width: 1440, height: 810 } });

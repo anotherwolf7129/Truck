@@ -5,7 +5,7 @@ const waitMs = Number(process.argv[3] || 6000);
 const script = process.argv[4] || '';
 
 const browser = await chromium.launch({
-  executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
   args: ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--no-sandbox','--disable-dev-shm-usage'],
 });
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
