@@ -10,7 +10,8 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-`npm test` runs the physics and mission suites headlessly (no browser needed).
+`npm test` runs the physics, convoy and mission suites headlessly (no browser
+needed) — after `npm install`, since they import `three` directly.
 
 ---
 
@@ -138,6 +139,33 @@ is — every obstruction known in advance:
   equipment — the mission test measures 211 °C in the drums without it against
   145 °C with it
 
+## Sound
+
+Synthesised, not sampled — the same constraint as the models. The engine note is
+built from its own firing frequency (rpm/20 Hz for a four-stroke six) plus three
+harmonics and a half-order rumble, behind a lowpass that opens under load, so it
+lugs, revs and shifts because the engine does rather than because a clip was
+crossfaded. The compression brake is the same frequency again, used to
+amplitude-modulate noise, which is where the bark comes from. Air is filtered
+noise fired off transitions — the governor cutting in, the parking brake
+dropping, a shift going through. Tire scrub is gated on how saturated the tires
+actually are, so it arrives exactly when grip is running out.
+
+Sound starts on the first click, because browsers will not give a page an audio
+context before then. <kbd>M</kbd> mutes, and the setting sticks.
+
+## The debrief
+
+The move ends when the load reaches the substation or goes over on its side, and
+either way you get a permit officer's sign-off: how close the load came to
+rolling, how hot the drums got, whether the air held, whether the rig ever left
+the surveyed corridor, whether every junction was actually held, and whether the
+deck ever touched down.
+
+The scorecard behind it (`src/mission/Scorecard.js`) is the same object the
+mission test scores its run with, so the numbers on screen are the numbers the
+test suite asserts on rather than a second implementation that can drift.
+
 ## Controls
 
 | | | | |
@@ -148,6 +176,7 @@ is — every obstruction known in advance:
 | Compression brake | <kbd>B</kbd> | Diff lock | <kbd>F</kbd> |
 | Camera | <kbd>C</kbd> | Look back | <kbd>X</kbd> |
 | Lift axle | <kbd>L</kbd> | Reset | <kbd>P</kbd> |
+| Pause | <kbd>Esc</kbd> | Mute | <kbd>M</kbd> |
 
 Gamepads work: left stick steers, triggers are the pedals, right stick is the
 rear steer. Steering is deliberately rate-limited — a truck's box is about five
@@ -163,9 +192,11 @@ src/
   world/       Route (spline, junctions, bridges, grades), Ground (terrain + grip)
   ai/          Traffic (IDM), Escort (blockades, leapfrog, radio), RoadPose
   render/      Scene (sky, lighting, probe), Models, WorldMesh
-  ui/          HUD, style
+  audio/       Audio (procedural engine, jake, air, scrub, radio)
+  mission/     Scorecard (how the move actually went)
+  ui/          HUD, Debrief, style
   core/        Input
-test/          physics.test.js, mission.test.js, convoy.test.js
+test/          physics, convoy, mission, scorecard
 tools/         layout.mjs (load analysis), plus driving and browser harnesses
 ```
 

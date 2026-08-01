@@ -32,6 +32,7 @@ export class HUD {
       convoy: root.querySelector('#convoy-list'),
       indicators: root.querySelector('#indicators'),
       clock: root.querySelector('#clock'),
+      paused: root.querySelector('#paused'),
     };
 
     this._lastRadioCount = 0;
@@ -124,6 +125,7 @@ export class HUD {
       ['DIFF', rig.diffLock, 'ok'],
       ['AUTO', game.autoShift, 'ok'],
       ['R-STEER', Math.abs(rig.trailerSteerAngle) > 0.02, 'ok'],
+      ['MUTE', game.audio.muted, 'critical'],
     ];
     this.el.indicators.innerHTML = lamps
       .map(([name, on, kind]) => `<span class="lamp ${on ? kind : 'off'}">${name}</span>`)
@@ -131,6 +133,11 @@ export class HUD {
 
     this.updateWarnings(game);
     this.updateRadio(game.convoy.radio);
+  }
+
+  /** The pause overlay is driven directly, since update() stops while paused. */
+  setPaused(paused) {
+    this.el.paused.classList.toggle('visible', paused);
   }
 
   setMeter(el, value) {
@@ -159,8 +166,11 @@ export class HUD {
   }
 
   updateRadio(radio) {
-    if (radio.messages.length === this._lastRadioCount) return;
-    this._lastRadioCount = radio.messages.length;
+    // Against `total` rather than `messages.length`: the buffer stops growing
+    // once it is full, so comparing the length silently freezes the panel for
+    // the rest of the move.
+    if (radio.total === this._lastRadioCount) return;
+    this._lastRadioCount = radio.total;
     this.el.radio.innerHTML = radio
       .recent(7)
       .map((m) => `<div class="radio-line ${m.priority}"><b>${m.from}:</b> ${m.text}</div>`)
@@ -206,6 +216,8 @@ const TEMPLATE = /* html */`
   </div>
 
   <div id="warnings"></div>
+
+  <div id="paused"><div class="paused-card">Paused<span>Esc to carry on</span></div></div>
 
   <div class="panel bottom-left" id="radio-panel">
     <div class="panel-title">Escort radio</div>

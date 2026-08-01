@@ -23,6 +23,10 @@ async function boot() {
 
   const begin = () => {
     startScreen.classList.remove('visible');
+    // This click (or Enter) is the user gesture the browser requires before it
+    // will hand over a running AudioContext, so the sound is built here rather
+    // than alongside the rest of the game.
+    game.attachAudio();
     game.start();
     canvas.focus();
   };

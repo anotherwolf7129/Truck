@@ -129,6 +129,73 @@ test('trailer off-tracks inside the tractor through a corner', () => {
   assert.ok(artic < rig.yawA.limit, 'trailer jackknifed in a normal corner');
 });
 
+/**
+ * A split-grip surface: one side of the truck on pavement, the other on
+ * something slick. This is the situation a differential lock exists for, and
+ * with an open diff it is how a 200,000 lb rig ends up stationary with one
+ * wheel spinning.
+ */
+function splitGrip(slickWhenXBelow = 0) {
+  return {
+    sample(x) {
+      return {
+        height: 0,
+        normal: new Vector3(0, 1, 0),
+        grip: x < slickWhenXBelow ? 0.12 : 1.0,
+      };
+    },
+  };
+}
+
+test('a locked differential sends torque to the wheel with grip', () => {
+  const drivenTorques = (locked) => {
+    const rig = new Rig();
+    rig.air.psi = 120;
+    rig.air.parkingBrake = false;
+    rig.powertrain.gear = 0;      // crawler, the gear you actually start one in
+    rig.diffLock = locked;
+    const ground = splitGrip();
+
+    // Settle, then pull against the split surface.
+    for (let i = 0; i < 400; i++) rig.step(1 / 200, ground);
+    rig.throttle = 1;
+    for (let i = 0; i < 200; i++) rig.step(1 / 200, ground);
+
+    const driven = rig.tractor.wheels.filter((w) => w.driven);
+    const slick = driven.filter((w) => w.contactPoint.x < 0);
+    const grippy = driven.filter((w) => w.contactPoint.x >= 0);
+    const sum = (ws) => ws.reduce((a, w) => a + w.driveTorque, 0);
+    return { slick: sum(slick), grippy: sum(grippy), total: sum(driven) };
+  };
+
+  const open = drivenTorques(false);
+  const locked = drivenTorques(true);
+
+  console.log(
+    `  open: ${open.grippy.toFixed(0)} Nm to the gripping side, ${open.slick.toFixed(0)} to the slick side\n` +
+    `  locked: ${locked.grippy.toFixed(0)} Nm to the gripping side, ${locked.slick.toFixed(0)} to the slick side`
+  );
+
+  // An open diff splits evenly regardless of what each wheel is standing on.
+  assert.ok(Math.abs(open.grippy - open.slick) < Math.abs(open.total) * 0.02,
+    'an open differential should split torque evenly');
+
+  // Locking it moves the torque to the side that can actually use it.
+  assert.ok(Math.abs(locked.grippy) > Math.abs(locked.slick) * 1.5,
+    `locking sent ${locked.grippy.toFixed(0)} Nm to the gripping side vs ${locked.slick.toFixed(0)} to the slick side`);
+
+  // The open case is worth reading rather than just passing: the slick wheel
+  // spins up, drags the engine into the governor, and the fuel gets cut -- so
+  // the rig is left making negative torque while going nowhere. That is the
+  // whole reason the lock is on the dash.
+  assert.ok(Math.abs(locked.total) > Math.abs(open.total),
+    'the locked rig should be putting down more torque than the spinning open one');
+
+  // And it is a split, not free torque: the total is unchanged.
+  assert.ok(Math.abs(locked.total - locked.grippy - locked.slick) < 1e-6,
+    'the lock must redistribute torque, not create it');
+});
+
 test('brakes fade when they are cooked', async () => {
   const { BrakeGroup } = await import('../src/physics/Brakes.js');
   const b = new BrakeGroup();

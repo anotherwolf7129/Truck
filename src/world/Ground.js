@@ -59,12 +59,7 @@ export class Ground {
     this.surfaceGrip = { asphalt: 1.0, shoulder: 0.72, dirt: 0.55 };
     this.wetness = 0;
 
-    // Cache of recent samples. The rig alone queries this ~40 times a step and
-    // most of those land in the same few square metres.
-    this._cache = new Map();
-    this._cacheStamp = 0;
-
-    this._result = { height: 0, normal: new Vector3(0, 1, 0), grip: 1, surface: 'asphalt' };
+    this._result ={ height: 0, normal: new Vector3(0, 1, 0), grip: 1, surface: 'asphalt' };
   }
 
   /** Terrain elevation away from the road corridor. */

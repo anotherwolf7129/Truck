@@ -22,6 +22,10 @@ export class Radio {
     this.messages = [];
     this.limit = limit;
     this.listeners = [];
+    // Every message ever sent, not just the ones still in the buffer. `messages`
+    // stops growing once it hits the limit, so anything watching it for new
+    // traffic goes deaf at that point -- which is well inside a single move.
+    this.total = 0;
   }
 
   say(from, text, { priority = 'normal', key = null, cooldown = 0, time = 0 } = {}) {
@@ -34,6 +38,7 @@ export class Radio {
     }
     const msg = { from, text, priority, time };
     this.messages.push(msg);
+    this.total++;
     if (this.messages.length > this.limit) this.messages.shift();
     for (const l of this.listeners) l(msg);
     return msg;
@@ -281,6 +286,7 @@ export class ConvoyManager {
     }
     for (const b of this.blockades) {
       b.active = false;
+      b.holdsMainline = false;
       b.released = false;
       b.assignedTo = null;
       b.queue.length = 0;
@@ -306,6 +312,7 @@ export class ConvoyManager {
       if (unit.assignment && convoyS - this.convoyLength > unit.assignment.s + 25) {
         const done = unit.assignment;
         done.active = false;
+        done.holdsMainline = false;
         done.released = true;
         done.assignedTo = null;
         unit.assignment = null;
@@ -464,6 +471,11 @@ export class ConvoyManager {
       // Sit across the mouth of the side road, once there is room to get over.
       const across = b.side * (this.route.roadHalfWidth + 1.5);
       unit.holdAt(dt, b.s, this.laneClear(unit, across) ? across : unit.lateral);
+      // Getting there means sweeping across the carriageway with the lights on,
+      // and for those few seconds the unit owns the whole road, not just the
+      // mouth of the side street. Once it is parked the highway reopens and only
+      // the side road stays shut.
+      b.holdsMainline = Math.abs(unit.lateral - across) > 0.6;
       return;
     }
 
