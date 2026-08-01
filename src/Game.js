@@ -24,7 +24,7 @@ const MAX_STEPS = 12;
 const CAMERAS = ['chase', 'cab', 'hood', 'trailer', 'cinematic'];
 
 export class Game {
-  constructor(canvas, hudRoot) {
+  constructor(canvas, hudRoot, options = {}) {
     this.render = new RenderContext(canvas);
     this.input = new Input();
 
@@ -35,18 +35,8 @@ export class Game {
     this.render.scene.add(this.worldMesh.group);
 
     // --- The rig ------------------------------------------------------------
-    this.rig = new Rig({
-      cargo: {
-        name: 'Substation transformer, 400 MVA',
-        mass: 68000,
-        size: new Vector3(3.66, 3.60, 8.40),
-        centerHeight: 2.35,
-      },
-    });
-    // Overall height of the load above the road, which is what the permit and
-    // every bridge on the route care about.
-    this.loadHeight = 0.55 + this.rig.cargo.size.y;
-    this.rig.loadHeight = this.loadHeight;
+    this.rig = new Rig({ trailer: options.trailer ?? 'lowboy4' });
+    this.loadHeight = this.rig.loadHeight;
 
     this.buildRigVisuals();
 
@@ -76,7 +66,7 @@ export class Game {
     this._camInit = false;
 
     this.hud = new HUD(hudRoot);
-    this.hud.setPermit(Object.assign(this.rig, { loadHeight: this.loadHeight }), this.route);
+    this.hud.setPermit(this.rig, this.route);
 
     this.reset();
   }
@@ -91,7 +81,7 @@ export class Game {
     const specs = [
       { unit: this.rig.tractor, mesh: createTractor() },
       { unit: this.rig.jeep, mesh: createJeep() },
-      { unit: this.rig.trailer, mesh: createLowboy(this.rig.cargo, this.rig.trailer.comHeight) },
+      { unit: this.rig.trailer, mesh: createLowboy(this.rig.config, this.rig.trailer.comHeight) },
     ];
 
     for (const { unit, mesh } of specs) {
@@ -311,7 +301,9 @@ export class Game {
         if (w.lifted) return;
         // Local position: strut mount dropped by the current suspension length.
         wm.position.set(w.position.x, w.position.y - w.lastLength, w.position.z);
-        _e.set(w.spinAngle, w.steerAngle, 0, 'YXZ');
+        // Matches the physics: positive steer is to the right, which is a
+        // negative rotation about +Y.
+        _e.set(w.spinAngle, -w.steerAngle, 0, 'YXZ');
         wm.quaternion.setFromEuler(_e);
       });
     }
@@ -416,17 +408,21 @@ export class Game {
       case 'trailer': {
         // Looking forward over the load from behind, which is how you actually
         // watch the rear axles track through a corner.
-        trailer.localToWorld(new Vector3(0, 2.6, -11.5), desiredPos);
-        trailer.localToWorld(new Vector3(0, 1.2, 6), lookAt);
+        const rearZ = this.rig.config.axleZ[this.rig.config.axleZ.length - 1];
+        trailer.localToWorld(new Vector3(0, 2.6, rearZ - 3.5), desiredPos);
+        trailer.localToWorld(new Vector3(0, 1.2, this.rig.config.gooseneckZ), lookAt);
         stiffness = 8;
         break;
       }
       case 'cinematic': {
         // A slow drift alongside the load, roughly where an escort would ride.
+        // Scaled to the combination so a 130 ft rig is not shot from inside it.
         const angle = this.elapsed * 0.08;
-        const radius = 26;
+        const radius = this.rig.combinationLength * 1.15;
         desiredPos.copy(trailer.position).add(new Vector3(
-          Math.cos(angle) * radius, 6 + Math.sin(angle * 0.7) * 3, Math.sin(angle) * radius
+          Math.cos(angle) * radius,
+          radius * 0.28 + Math.sin(angle * 0.7) * 3,
+          Math.sin(angle) * radius
         ));
         lookAt.copy(trailer.position).add(new Vector3(0, 1.5, 0));
         stiffness = 2.2;
@@ -450,9 +446,10 @@ export class Game {
         if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, 1);
         fwd.normalize();
 
-        const back = looking ? 40 : -40;
-        desiredPos.copy(centre).addScaledVector(fwd, back);
-        desiredPos.y = centre.y + 13.5;
+        // Frame the whole combination, whatever length it happens to be.
+        const reach = this.rig.combinationLength * 1.45;
+        desiredPos.copy(centre).addScaledVector(fwd, looking ? reach : -reach);
+        desiredPos.y = centre.y + reach * 0.36;
 
         lookAt.copy(centre);
         lookAt.y += 1.2;
@@ -499,7 +496,7 @@ export class Game {
 
     this.convoy.update(dt, this.convoyS, this.convoySpeed, this.loadHeight);
     this.traffic.update(dt, {
-      convoy: { s: this.convoyS, speed: this.convoySpeed, length: 27 },
+      convoy: { s: this.convoyS, speed: this.convoySpeed, length: this.rig.combinationLength },
       blockades: this.convoy.blockades,
       route: this.route,
     });
@@ -511,7 +508,7 @@ export class Game {
     this.updateCamera(dt);
 
     this.render.update(this.rig.tractor.body.position);
-    this.hud.update(this);
+    this.hud.update(this, dt);
     this.input.endFrame();
   }
 

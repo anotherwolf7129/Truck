@@ -43,7 +43,7 @@ export class HUD {
     return Math.round(n * 0.2248089431).toLocaleString();
   }
 
-  update(game) {
+  update(game, dt = 1 / 60) {
     const rig = game.rig;
     const t = rig.telemetry;
 
@@ -93,9 +93,12 @@ export class HUD {
     // pavement; nobody reads a scale that twitches.
     const groups = rig.axleWeights();
     this._axleSmooth ??= groups.map((g) => g.lb);
+    // Time-based rather than per-frame, so the gauge settles at the same rate
+    // whether the machine is running at 144 fps or struggling at 10.
+    const k = 1 - Math.exp(-dt / 0.7);
     this.el.axles.innerHTML = groups
       .map((g, i) => {
-        this._axleSmooth[i] += (g.lb - this._axleSmooth[i]) * 0.06;
+        this._axleSmooth[i] += (g.lb - this._axleSmooth[i]) * k;
         return `<div class="axle-row"><span>${g.label}</span>` +
           `<span>${Math.round(this._axleSmooth[i]).toLocaleString()} lb</span></div>`;
       })
@@ -123,7 +126,7 @@ export class HUD {
       ['JAKE', rig.powertrain.engineBrakeStage > 0, 'ok'],
       ['DIFF', rig.diffLock, 'ok'],
       ['AUTO', game.autoShift, 'ok'],
-      ['R-STEER', Math.abs(rig.trailerSteerAngle) > 0.02, 'ok'],
+      ['REAR STEER', rig.autoTrailerSteer, 'ok'],
     ];
     this.el.indicators.innerHTML = lamps
       .map(([name, on, kind]) => `<span class="lamp ${on ? kind : 'off'}">${name}</span>`)
@@ -170,14 +173,15 @@ export class HUD {
 
   setPermit(rig, route) {
     const cargo = rig.cargo;
-    const widthFt = cargo.size.x * 3.28084;
     const heightM = rig.loadHeight ?? 0;
+    const axles = 2 + 4 + rig.config.axleZ.length; // steer + drives/jeep + lowboy
     this.el.permit.innerHTML = `
       <div class="permit-row"><span>Load</span><span>${cargo.name}</span></div>
+      <div class="permit-row"><span>Trailer</span><span>${rig.config.name}</span></div>
       <div class="permit-row"><span>Gross</span><span>${Math.round(rig.grossWeightLb).toLocaleString()} lb</span></div>
-      <div class="permit-row"><span>Width</span><span>${widthFt.toFixed(1)} ft</span></div>
+      <div class="permit-row"><span>Width</span><span>${(cargo.size.x * 3.28084).toFixed(1)} ft</span></div>
       <div class="permit-row"><span>Height</span><span>${(heightM * 3.28084).toFixed(2)} ft (${heightM.toFixed(2)} m)</span></div>
-      <div class="permit-row"><span>Length</span><span>87 ft combination</span></div>
+      <div class="permit-row"><span>Length</span><span>${Math.round(rig.combinationLength * 3.28084)} ft, ${axles} axles</span></div>
       <div class="permit-row"><span>Route</span><span>${route.staging.name} &rarr; ${route.destination.name}</span></div>
     `;
   }

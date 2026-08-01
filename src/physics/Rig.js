@@ -4,10 +4,11 @@ import { BallJoint, RollCoupling, YawLimit } from './Constraints.js';
 import { Powertrain } from './Powertrain.js';
 import { AirSystem, BrakeGroup } from './Brakes.js';
 import { TRUCK_TIRE, STEER_TIRE } from './Tire.js';
+import { trailerConfig, loadSplit } from './Trailers.js';
 
 const GRAVITY = new Vector3(0, -9.81, 0);
 const LOCAL_FWD = new Vector3(0, 0, 1);
-const LOCAL_RIGHT = new Vector3(1, 0, 0);
+const LOCAL_RIGHT = new Vector3(-1, 0, 0);
 const _tmp = new Vector3();
 
 const N_TO_LB = 0.2248089431;
@@ -15,6 +16,10 @@ const N_TO_LB = 0.2248089431;
 // Every pivot on the combination sits at this height above the road, which is
 // where a real fifth wheel plate lives.
 const COUPLING_HEIGHT = 1.329;
+
+// World z of the jeep's rear fifth wheel relative to the tractor's centre of
+// mass. The trailer hangs off this, so its length changes where it sits.
+const JEEP_REAR_COUPLING = 4.60;
 
 /**
  * The complete heavy haul combination: 6x4 tractor, two-axle jeep dolly, and a
@@ -28,17 +33,20 @@ const COUPLING_HEIGHT = 1.329;
  */
 export class Rig {
   constructor(options = {}) {
-    const cargo = options.cargo ?? {
-      name: 'Substation transformer',
-      mass: 68000,
-      size: new Vector3(3.6, 3.05, 8.4),
-      centerHeight: 2.10,
-    };
-    this.cargo = cargo;
+    // Which trailer and load this is. Everything downstream -- geometry, spring
+    // rates, the hitch anchor, where the units spawn -- derives from it.
+    this.config = typeof options.trailer === 'string'
+      ? trailerConfig(options.trailer)
+      : (options.trailer ?? trailerConfig('lowboy4'));
+    this.cargo = this.config.cargo;
+
+    // Overall height of the load above the road, which is what the permit and
+    // every bridge on the route care about.
+    this.loadHeight = 0.55 + this.cargo.size.y;
 
     this.tractor = this.buildTractor();
     this.jeep = this.buildJeep();
-    this.trailer = this.buildTrailer(cargo);
+    this.trailer = this.buildTrailer(this.config);
 
     this.units = [this.tractor, this.jeep, this.trailer];
 
@@ -60,7 +68,8 @@ export class Rig {
     // forward onto the tractor's drives instead of levering the nose light.
     this.hitchB = new BallJoint(
       this.jeep.body, new Vector3(0, 0.337, -0.30),
-      this.trailer.body, new Vector3(0, COUPLING_HEIGHT - this.trailer.comHeight, 6.30)
+      this.trailer.body,
+      new Vector3(0, COUPLING_HEIGHT - this.trailer.comHeight, this.config.gooseneckZ)
     );
     this.rollB = new RollCoupling(this.jeep.body, this.trailer.body, { stiffness: 0.88 });
     this.yawB = new YawLimit(this.jeep.body, this.trailer.body, { limit: 1.30 });
@@ -79,14 +88,19 @@ export class Rig {
     this.steerRate = 0.9;       // rad/s at the road wheel; a truck box is slow
     this.throttle = 0;
     this.brake = 0;
-    this.trailerSteerInput = 0; // steerman control for the rear axle group
+    this.trailerSteerInput = 0; // manual trim on top of the command steer
     this.trailerSteerAngle = 0;
     this.maxTrailerSteer = 0.44;
+    this.autoTrailerSteer = true;
+        // 3.0 measured best through the switchback: it cuts the tail's off-tracking
+    // from 0.57 m to 0.16 m. Higher starts to over-correct and steer the tail
+    // out the other way. See tools/offtrack.mjs.
+    this.trailerSteerGain = 3.0;
     this.diffLock = false;
 
     this.wheelbase = 5.10;
     this.steerTrack = 2.04;
-    this.trailerHalfTrack = 0.98;
+    this.trailerHalfTrack = this.config.trackHalfWidth;
 
     // Ambient wind, world space. Escort crews call wind constantly on a tall
     // load, and a permit move is normally shut down above about 30 mph gusts.
@@ -197,77 +211,90 @@ export class Rig {
   }
 
   /**
-   * The lowboy. Four rear axles carry the deck load; the rearmost two steer,
-   * operated either by the driver or by a steerman walking alongside.
+   * The lowboy, built from a trailer configuration.
+   *
+   * Everything that varies between configurations -- axle count and spacing,
+   * deck length, which axles steer, spring rate -- is derived here rather than
+   * hardcoded, so adding a longer or heavier trailer cannot silently leave the
+   * wheels buried in the road or the springs sized for a different load.
    */
-  buildTrailer(cargo) {
-    const trailerTare = 14000;
-    const mass = trailerTare + cargo.mass;
+  buildTrailer(config) {
+    const cargo = config.cargo;
+    const mass = config.tare + cargo.mass;
     const deckHeight = 0.55;
+    const split = loadSplit(config);
 
     // The load dominates the combined centre of gravity, and it sits high. This
     // is the single biggest handling factor on the rig: it sets the rollover
     // threshold, and it is why these moves crawl through corners a bobtail
     // tractor would take at forty.
-    const comHeight = (cargo.mass * cargo.centerHeight + trailerTare * 0.90) / mass;
+    const comHeight = (cargo.mass * cargo.centerHeight + config.tare * 0.90) / mass;
 
-    // Suspension geometry is derived from that centre of gravity rather than
-    // hardcoded, so changing the load cannot silently leave the wheels buried
-    // in the road or hanging above it.
-    const radius = 0.46;
+    const radius = config.wheelRadius;
     const restLength = 0.26;
     const staticCompression = 0.047;
     const mountY = -(comHeight - (restLength - staticCompression) - radius);
 
+    // Spring rate sized so each position sits at the same fraction of its travel
+    // under its own share of the deck load, whatever the axle count.
+    const stiffness = split.perWheelN / (1.55 * staticCompression);
+    const damping = stiffness * 0.057;
+
     const wheels = [];
-    const axleZ = [-4.10, -5.45, -6.80, -8.15];
-    axleZ.forEach((z, i) => {
+    config.axleZ.forEach((z, i) => {
       for (const side of [-1, 1]) {
         wheels.push(new Wheel({
-          position: new Vector3(side * 0.98, mountY, z),
+          position: new Vector3(side * config.trackHalfWidth, mountY, z),
           dual: true,
           radius,
           tire: TRUCK_TIRE,
           restLength,
-          stiffness: 700000,
-          damping: 40000,
+          stiffness,
+          damping,
           maxTravel: 0.16,
-          // The two rearmost axles steer to shorten the effective off-track
-          // through tight corners.
-          tandemSteer: i >= 2,
+          // The rear axles command-steer to keep the tail tracking the tractor.
+          tandemSteer: i >= config.steerFromIndex,
           brake: new BrakeGroup({ maxTorque: 8600, thermalMass: 26000, lag: 0.32 }),
-          liftable: i === 1,
+          liftable: config.liftableIndex !== null && i === config.liftableIndex,
         }));
       }
     });
 
+    const rearZ = config.axleZ[config.axleZ.length - 1];
+    const length = config.gooseneckZ - rearZ + 3;
+
     const unit = new VehicleUnit({
       name: 'trailer',
       mass,
-      size: new Vector3(3.6, cargo.size.y, 16.0),
+      size: new Vector3(config.deckHalfWidth * 2, cargo.size.y, length),
       wheels,
-      position: new Vector3(0, comHeight, -10.90),
+      position: new Vector3(0, comHeight, -(JEEP_REAR_COUPLING + config.gooseneckZ)),
     });
     unit.comHeight = comHeight;
     unit.deckHeight = deckHeight;
     unit.antiRollStiffness = 420000;
     unit.cargo = cargo;
+    unit.config = config;
 
-    // The load itself is the aerodynamic problem: 3.6 m wide and 3 m tall of
-    // flat, unfaired steel. Cd for a bluff box like this is close to 1.0.
-    const frontal = cargo.size.x * cargo.size.y;
-    unit.dragArea = frontal * 0.98;
+    // The load itself is the aerodynamic problem: metres of flat, unfaired
+    // steel. Cd for a bluff box like this is close to 1.0.
+    unit.dragArea = cargo.size.x * cargo.size.y * 0.98;
     unit.sideArea = cargo.size.z * cargo.size.y * 0.85;
-    unit.pressureCenterHeight = cargo.centerHeight - (comHeight - 0);
+    unit.pressureCenterHeight = cargo.centerHeight - comHeight;
 
     // Underside of the well deck. At 0.55 m off the road this is the lowest
     // point on the whole combination and the first thing to touch on a crest.
     const deckLocalY = deckHeight - comHeight;
-    unit.chassisPoints = [
-      new Vector3(-1.3, deckLocalY, 4.6), new Vector3(1.3, deckLocalY, 4.6),
-      new Vector3(-1.3, deckLocalY, 0.0), new Vector3(1.3, deckLocalY, 0.0),
-      new Vector3(-1.3, deckLocalY, -3.2), new Vector3(1.3, deckLocalY, -3.2),
-    ];
+    const deckFront = config.gooseneckZ - 2.0;
+    const deckRear = rearZ + 1.0;
+    unit.chassisPoints = [];
+    for (let i = 0; i <= 4; i++) {
+      const z = deckFront + ((deckRear - deckFront) * i) / 4;
+      unit.chassisPoints.push(
+        new Vector3(-config.deckHalfWidth * 0.85, deckLocalY, z),
+        new Vector3(config.deckHalfWidth * 0.85, deckLocalY, z)
+      );
+    }
     return unit;
   }
 
@@ -295,13 +322,25 @@ export class Rig {
       const inner = Math.atan(this.wheelbase / (R - this.steerTrack / 2));
       const outer = Math.atan(this.wheelbase / (R + this.steerTrack / 2));
       for (const w of steerWheels) {
-        const isInner = Math.sign(w.position.x) === sign;
+        // The inside wheel of the turn traces the tighter radius. Turning right
+        // means the -X wheel is on the inside.
+        const isInner = Math.sign(w.position.x) === -sign;
         w.steerAngle = sign * (isInner ? inner : outer);
       }
     }
 
-    // Trailer rear steer, with self-centring when released.
-    const tTarget = this.trailerSteerInput * this.maxTrailerSteer;
+    // --- Trailer rear steer -------------------------------------------------
+    // Real lowboys of this length run command steer: the rear axles are slaved
+    // to the articulation angle at the gooseneck so the trailer's tail follows
+    // the tractor's path instead of cutting inside it. That is a machine doing
+    // it, not the driver, so it runs automatically here. Q and E remain as a
+    // manual trim on top, the way a steerman would nudge it.
+    const auto = this.autoTrailerSteer
+      ? Math.max(-1, Math.min(1, this.yawB.angle * this.trailerSteerGain))
+      : 0;
+    const commanded = Math.max(-1, Math.min(1, auto + this.trailerSteerInput));
+
+    const tTarget = commanded * this.maxTrailerSteer;
     this.trailerSteerAngle += (tTarget - this.trailerSteerAngle) * Math.min(1, 2.2 * dt);
     for (const w of this.trailer.wheels) {
       if (w.tandemSteer) w.steerAngle = this.trailerSteerAngle;
@@ -444,6 +483,12 @@ export class Rig {
     return groups;
   }
 
+  /** Bumper to tail, in metres. */
+  get combinationLength() {
+    const rearZ = this.config.axleZ[this.config.axleZ.length - 1];
+    return 4.0 + JEEP_REAR_COUPLING + this.config.gooseneckZ - rearZ + 2.5;
+  }
+
   get grossWeightLb() {
     return this.units.reduce((s, u) => s + u.body.mass, 0) * 2.20462;
   }
@@ -477,7 +522,7 @@ export class Rig {
    * axle load.
    */
   placeAt(position, heading, ground = null) {
-    const offsets = [0, -4.30, -10.90];
+    const offsets = [0, -4.30, -(JEEP_REAR_COUPLING + this.config.gooseneckZ)];
     const rideHeights = [1.182, 0.992, this.trailer.comHeight];
     const dir = new Vector3(Math.sin(heading), 0, Math.cos(heading));
 

@@ -46,11 +46,26 @@ wheels, and the convoy is a **behavioural system**, not scripted animation.
 Three rigid bodies, coupled at two pivots, so the combination actually
 articulates:
 
-| Unit | Mass | Detail |
-|---|---|---|
-| Tractor | 9,500 kg | 6×4, long-nose conventional, steer axle + drive tandem |
-| Jeep dolly | 5,000 kg | Two axles, spreads deck load forward onto the drives |
-| Lowboy | 82,000 kg | Four axles, rear two steerable, 400 MVA transformer on the deck |
+| Unit | Detail |
+|---|---|
+| Tractor | 9,500 kg. 6×4, long-nose conventional, steer axle + drive tandem |
+| Jeep dolly | 5,000 kg. Two axles, spreads deck load forward onto the drives |
+| Lowboy | The bit you choose — see below |
+
+Three trailers are selectable on the start screen, and they change the driving,
+not just the silhouette:
+
+| Trailer | Load | Gross | Length |
+|---|---|---|---|
+| 4-axle lowboy | 400 MVA transformer | 212,746 lb | 90 ft |
+| 6-axle stretch lowboy | 4000-ton press bed | 267,861 lb | 111 ft |
+| 8-axle girder trailer | 112 ft welded plate girder | 261,247 lb | 137 ft |
+
+More axles spread the deck load — 11,462 lb per wheel position on the four-axle
+against 7,397 on the eight — while more length means more off-tracking through
+every corner and more road needed at every junction. Axle positions, spring
+rates, deck geometry and the hitch anchor are all derived from the configuration
+rather than hand-placed, so each one is sized correctly for its own load.
 
 That layout is not decorative. Two pivot points are the minimum needed to
 reproduce the behaviour that defines this kind of driving — the trailer tracking
@@ -90,9 +105,13 @@ GROSS   212,746 lb
 - **Suspension** — raycast struts with bump stops, anti-roll bars that transfer
   load across each axle, and chassis contact points so a 22-inch lowboy deck can
   actually ground out on a crest.
-- **Aerodynamics** — the load is 12 ft of unfaired steel, and crosswind acts at a
-  centre of pressure above the centre of mass, so a gust rolls the rig rather than
-  just shoving it.
+- **Aerodynamics** — the load is a slab of unfaired steel, and crosswind acts at
+  a centre of pressure above the centre of mass, so a gust rolls the rig rather
+  than just shoving it.
+- **Command steer** — the trailer's rear axles are slaved to the articulation at
+  the gooseneck, the way a real lowboy of this length is. It runs itself; the
+  measured effect through the switchback is off-tracking cut from 0.57 m to
+  0.16 m (`tools/offtrack.mjs`).
 
 Validated against real-world figures:
 
@@ -114,13 +133,14 @@ your attention than the speedometer.
 Four escorts, and the interesting behaviour is the **leapfrog**:
 
 - **Unit 12 / Unit 8** (police) — run ahead, park across the mouth of a side road
-  with the lights going, hold it until the whole 87 ft combination is clear, then
+  with the lights going, hold it until the whole combination is clear, then
   release and run up the shoulder past you to take the next junction nobody is
   covering. Done properly the load never stops, and it looks like every side road
   on the route happens to be closed.
-- **Lead** (pilot car) — 140 m out front carrying a height pole set just above the
-  load, calling bridges, corners and grades over the radio before you can see them.
-- **Chase** (pilot car) — 95 m behind, keeping following traffic off your tail.
+- **Lead** (pilot car) — about 200 ft out front carrying a height pole set just
+  above the load, calling bridges, corners and grades over the radio before you
+  can see them.
+- **Chase** (pilot car) — just off your tail, keeping following traffic back.
 
 Ambient traffic runs an Intelligent Driver Model. Oncoming vehicles take the
 shoulder and stop, because the load is wider than the lane it is travelling in and
@@ -147,15 +167,18 @@ is — every obstruction known in advance:
 | | | | |
 |---|---|---|---|
 | Steer | <kbd>A</kbd> <kbd>D</kbd> | Throttle / brake | <kbd>W</kbd> <kbd>S</kbd> |
-| Trailer rear steer | <kbd>Q</kbd> <kbd>E</kbd> | Parking brake | <kbd>Space</kbd> |
+| Parking brake | <kbd>Space</kbd> | Compression brake | <kbd>B</kbd> |
 | Shift up / down | <kbd>Shift</kbd> <kbd>Ctrl</kbd> | Auto shift | <kbd>T</kbd> |
-| Compression brake | <kbd>B</kbd> | Diff lock | <kbd>F</kbd> |
 | Camera | <kbd>C</kbd> | Look back | <kbd>X</kbd> |
-| Lift axle | <kbd>L</kbd> | Reset | <kbd>P</kbd> |
+| Diff lock | <kbd>F</kbd> | Lift axle | <kbd>L</kbd> |
+| Rear-steer trim | <kbd>Q</kbd> <kbd>E</kbd> | Reset | <kbd>P</kbd> |
 
-Gamepads work: left stick steers, triggers are the pedals, right stick is the
-rear steer. Steering is deliberately rate-limited — a truck's box is about five
-turns lock to lock, and a load this tall punishes fast corrections.
+The rear axles steer themselves. <kbd>Q</kbd> and <kbd>E</kbd> are only a trim,
+for placing the tail by hand in a tight spot.
+
+Gamepads work: left stick steers, triggers are the pedals. Steering is
+deliberately rate-limited — a truck's box is about five turns lock to lock, and a
+load this tall punishes fast corrections.
 
 Release the parking brake to start. Take the switchback at eight.
 
@@ -163,7 +186,8 @@ Release the parking brake to start. Take the switchback at eight.
 
 ```
 src/
-  physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig
+  physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig,
+               Trailers (selectable trailer and load configurations)
   world/       Route (spline, junctions, bridges, grades), Ground (terrain + grip)
   ai/          Traffic (IDM), Escort (blockades, leapfrog, radio)
   render/      Scene (sky, lighting, probe), Models, WorldMesh

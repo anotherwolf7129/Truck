@@ -17,18 +17,11 @@ import { TrafficManager } from '../src/ai/Traffic.js';
  * steer at the centre of the lane, gear down on descents. If a competent but
  * unexceptional driver cannot get the load there, the route is not fair.
  */
-function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
+function runMission({ maxMinutes = 45, useEngineBrake = true, trailer = 'lowboy4' } = {}) {
   const route = new Route();
   const ground = new Ground(route);
-  const rig = new Rig({
-    cargo: {
-      name: 'Substation transformer, 400 MVA',
-      mass: 68000,
-      size: new Vector3(3.66, 3.60, 8.40),
-      centerHeight: 2.35,
-    },
-  });
-  const loadHeight = 0.55 + rig.cargo.size.y;
+  const rig = new Rig({ trailer });
+  const loadHeight = rig.loadHeight;
 
   const startS = route.staging.s;
   rig.placeAt(
@@ -90,7 +83,9 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
     const aimS = s + Math.max(18, Math.abs(rig.speedMph) * 1.5);
     const aim = route.positionAt(aimS, route.laneWidth * 0.5, new Vector3());
     const fwd = rig.tractor.body.localToWorldDir(new Vector3(0, 0, 1), new Vector3());
-    const right = rig.tractor.body.localToWorldDir(new Vector3(1, 0, 0), new Vector3());
+    // The vehicle's right-hand side is -X: +Z forward with +Y up in a
+    // right-handed frame puts +X on the left.
+    const right = rig.tractor.body.localToWorldDir(new Vector3(-1, 0, 0), new Vector3());
     const toAim = aim.sub(p);
     const steer = Math.atan2(toAim.dot(right), Math.max(1, toAim.dot(fwd)));
     rig.steerInput = Math.max(-1, Math.min(1, steer * 2.2));
@@ -101,7 +96,7 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
     const speed = rig.tractor.forwardSpeed;
     convoy.update(dt, s, speed, loadHeight);
     traffic.update(dt, {
-      convoy: { s, speed, length: 27 },
+      convoy: { s, speed, length: rig.combinationLength },
       blockades: convoy.blockades,
       route,
     });
@@ -193,4 +188,38 @@ test('riding the service brakes down the grade cooks them', () => {
   console.log(`  peak brake temp: ${withJake.toFixed(0)} C with engine brake, ${without.toFixed(0)} C without`);
   assert.ok(without > withJake + 40,
     `engine brake made no meaningful difference (${withJake.toFixed(0)} vs ${without.toFixed(0)} C)`);
+});
+
+// --- Every trailer configuration has to be drivable -------------------------
+
+test('each trailer configuration can complete the route', async () => {
+  const { TRAILER_CONFIGS } = await import('../src/physics/Trailers.js');
+  for (const config of TRAILER_CONFIGS) {
+    const r = runMission({ trailer: config.id, maxMinutes: 45 });
+    console.log(
+      `  ${config.name.padEnd(24)} delivered=${r.completed} ` +
+      `${r.minutes.toFixed(0)} min, rollover ${r.peakRollover.toFixed(2)}, ` +
+      `jackknife ${r.peakJackknife.toFixed(2)}, ${r.junctionsBlocked} junctions blocked`
+    );
+    assert.ok(r.completed, `${config.name} only reached ${r.distanceMi.toFixed(2)} mi`);
+    assert.ok(r.peakRollover < 1.0, `${config.name} rolled the load`);
+    assert.ok(r.peakJackknife < 0.9, `${config.name} jackknifed`);
+    assert.deepStrictEqual(r.junctionsMissed, [], `${config.name} missed a junction`);
+  }
+});
+
+test('every configuration loads its axles sensibly', async () => {
+  const { TRAILER_CONFIGS, loadSplit } = await import('../src/physics/Trailers.js');
+  for (const c of TRAILER_CONFIGS) {
+    const s = loadSplit(c);
+    const perWheelLb = s.perWheelN * 0.2248089431;
+    console.log(`  ${c.name.padEnd(24)} ${Math.round(perWheelLb).toLocaleString()} lb per wheel position, gooseneck ${(s.gooseneckFraction*100).toFixed(0)}%`);
+    // A dual position carries two tires; much over 12,000 lb and the tires are
+    // past their rating, much under 5,000 and the axles are pointless weight.
+    assert.ok(perWheelLb > 5000 && perWheelLb < 13000,
+      `${c.name}: ${Math.round(perWheelLb)} lb per wheel is not a sane axle load`);
+    // The gooseneck has to carry a real share or the tractor has no traction.
+    assert.ok(s.gooseneckFraction > 0.35 && s.gooseneckFraction < 0.60,
+      `${c.name}: gooseneck carries ${(s.gooseneckFraction*100).toFixed(0)}%`);
+  }
 });

@@ -208,12 +208,16 @@ export class ConvoyManager {
 
     this.blockades = route.junctions.map((j) => new Blockade(j, route));
 
-    // Station-keeping distances, metres relative to the load.
+    // Station-keeping distances in metres, measured from the tractor. The
+    // combination itself is 27 m long, so the chase car sits about 25 m off the
+    // tail. A pilot car works a couple of hundred feet out -- close enough that
+    // the driver can see what it is reacting to, which is the entire point of
+    // having it there.
     this.stations = {
-      [Role.LEAD_POLICE]: 260,
-      [Role.LEAD_PILOT]: 140,
-      [Role.REAR_PILOT]: -95,
-      [Role.REAR_POLICE]: -170,
+      [Role.LEAD_POLICE]: 150,
+      [Role.LEAD_PILOT]: 60,
+      [Role.REAR_PILOT]: -52,
+      [Role.REAR_POLICE]: -105,
     };
 
     this.vehicles = [
@@ -225,7 +229,9 @@ export class ConvoyManager {
 
     this.convoyS = 0;
     this.convoySpeed = 0;
-    this.convoyLength = 27;
+    // How much road the combination occupies. A blockade is not released until
+    // the whole thing is past, so this has to be the real length.
+    this.convoyLength = rig?.combinationLength ?? 27;
 
     // The height pole on the lead car is set just above the load, so it strikes
     // anything the load would strike.

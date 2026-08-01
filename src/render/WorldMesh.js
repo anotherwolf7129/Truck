@@ -9,6 +9,34 @@ const _p = new Vector3();
 const _dummy = new Object3D();
 
 /**
+ * Makes sure a ground-plane mesh faces up.
+ *
+ * Whether a given triangle order winds clockwise or counter-clockwise depends
+ * on which way the route's lateral axis points, so hand-deriving it is exactly
+ * the kind of sign question that gets flipped by an unrelated change elsewhere
+ * -- and the failure mode is silent: the surface is backface-culled and you
+ * stare straight through the road at the sky. Checking the result instead of
+ * reasoning about it removes the whole class of bug.
+ */
+function ensureUpwardWinding(geo) {
+  geo.computeVertexNormals();
+  const normal = geo.getAttribute('normal');
+  let sum = 0;
+  for (let i = 0; i < normal.count; i++) sum += normal.getY(i);
+  if (sum >= 0) return geo;
+
+  const idx = geo.index.array;
+  for (let i = 0; i < idx.length; i += 3) {
+    const t = idx[i];
+    idx[i] = idx[i + 2];
+    idx[i + 2] = t;
+  }
+  geo.index.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
  * Road surface texture: asphalt with lane markings baked in.
  *
  * Drawn to a canvas rather than loaded, so the whole thing ships without
@@ -92,10 +120,6 @@ export class WorldMesh {
         uvs.push(s / 8, j);
       }
       if (i < count) {
-        // Wound counter-clockwise seen from above so the surface normal points
-        // up. The other winding leaves the road backface-culled, and since the
-        // terrain skirts stop at the pavement edge you end up looking straight
-        // through the road at the sky.
         const a = i * 2;
         indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
       }
@@ -106,7 +130,7 @@ export class WorldMesh {
     geo.setAttribute('normal', new BufferAttribute(new Float32Array(normals), 3));
     geo.setAttribute('uv', new BufferAttribute(new Float32Array(uvs), 2));
     geo.setIndex(indices);
-    geo.computeVertexNormals();
+    ensureUpwardWinding(geo);
 
     const tex = makeRoadTexture(half, route.laneWidth);
     tex.repeat.set(1, 1);
@@ -184,7 +208,7 @@ export class WorldMesh {
     geo.setAttribute('normal', new BufferAttribute(new Float32Array(normals), 3));
     geo.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
     geo.setIndex(indices);
-    geo.computeVertexNormals();
+    ensureUpwardWinding(geo);
 
     const mat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.97, metalness: 0 });
     this.terrain = new Mesh(geo, mat);

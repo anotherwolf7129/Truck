@@ -217,35 +217,57 @@ export function createJeep() {
 // -----------------------------------------------------------------------------
 
 /**
- * A four-axle lowboy with a dropped well deck, plus the load sitting on it.
+ * The lowboy and its load, built from a trailer configuration.
  *
- * The deck sits about 0.55 m off the road, which is the whole point of the
- * trailer: it buys back nearly a metre of vertical clearance so a tall load can
- * still get under bridges.
+ * Deck length, axle positions and the shape of the load all come from the
+ * config, so a 40-metre girder trailer and a short four-axle lowboy are the
+ * same code with different numbers rather than two hand-built models.
  */
-export function createLowboy(cargo, comHeight) {
+export function createLowboy(config, comHeight) {
+  const cargo = config.cargo;
   const g = new Group();
   const y = (world) => world - comHeight;   // world height -> local
+
+  const halfW = config.deckHalfWidth;
+  const neckZ = config.gooseneckZ;
+  const rearZ = config.axleZ[config.axleZ.length - 1];
+  const deckFront = neckZ - 2.2;
+  const deckRear = rearZ + 1.2;
+  const deckLen = deckFront - deckRear;
+  const deckMid = (deckFront + deckRear) / 2;
+  const deckY = y(0.55);
 
   // Gooseneck: rises from the deck up to the coupling height.
   const neck = box(1.6, 0.85, 2.6, materials.frame, 0.05);
   neck.rotation.x = 0.16;
-  g.add(place(neck, 0, y(1.05), 5.5));
-  g.add(place(box(1.3, 0.55, 1.5, materials.frame, 0.04), 0, y(1.16), 6.5));
+  g.add(place(neck, 0, y(1.05), neckZ - 0.8));
+  g.add(place(box(1.3, 0.55, 1.5, materials.frame, 0.04), 0, y(1.16), neckZ + 0.2));
 
   // Well deck
-  const deckY = y(0.55);
-  g.add(place(box(3.05, 0.22, 9.4, materials.deck, 0.02), 0, deckY, 0.4));
-  for (const side of [-1.32, 1.32]) {
-    g.add(place(box(0.28, 0.46, 9.8, materials.frame, 0.03), side, deckY - 0.10, 0.4));
+  g.add(place(box(halfW * 2, 0.22, deckLen, materials.deck, 0.02), 0, deckY, deckMid));
+  for (const side of [-1, 1]) {
+    g.add(place(
+      box(0.28, 0.46, deckLen + 0.4, materials.frame, 0.03),
+      side * (halfW - 0.16), deckY - 0.10, deckMid
+    ));
   }
 
-  // Rear axle bogie frame
-  g.add(place(box(2.9, 0.5, 5.4, materials.frame, 0.04), 0, y(0.95), -6.1));
+  // Rear axle bogie frame, spanning the axle group.
+  const bogieFront = config.axleZ[0] + 0.9;
+  const bogieLen = bogieFront - rearZ + 1.4;
+  g.add(place(
+    box(halfW * 1.9, 0.5, bogieLen, materials.frame, 0.04),
+    0, y(0.95), (bogieFront + rearZ - 1.4) / 2
+  ));
 
   // Outriggers, which is how the deck gets wide enough for an oversize load.
-  for (const z of [3.4, 1.2, -1.0, -3.0]) {
-    g.add(place(box(3.9, 0.10, 0.22, materials.frame, 0.02), 0, deckY + 0.13, z));
+  const outriggerCount = Math.max(3, Math.round(deckLen / 2.6));
+  for (let i = 0; i < outriggerCount; i++) {
+    const z = deckRear + (deckLen * (i + 0.5)) / outriggerCount;
+    g.add(place(
+      box(Math.max(halfW * 2.2, cargo.size.x + 0.4), 0.10, 0.22, materials.frame, 0.02),
+      0, deckY + 0.13, z
+    ));
   }
 
   // --- The load ----------------------------------------------------------
@@ -254,22 +276,39 @@ export function createLowboy(cargo, comHeight) {
   const ch = cargo.size.y;
   const cd = cargo.size.z;
 
-  const bodyMesh = box(cw, ch, cd, materials.cargoSteel, 0.06);
-  cargoGroup.add(place(bodyMesh, 0, 0, 0));
+  cargoGroup.add(place(box(cw, ch, cd, materials.cargoSteel, 0.06), 0, 0, 0));
 
-  // Transformer detailing: radiator banks down the sides, bushings on top.
-  for (const side of [-1, 1]) {
-    for (let i = -2; i <= 2; i++) {
+  if (cd > 20) {
+    // A long girder: web stiffeners down its length and flanges top and bottom
+    // rather than transformer detailing.
+    for (let i = -6; i <= 6; i++) {
       cargoGroup.add(place(
-        box(0.16, ch * 0.62, 0.34, materials.cargoAccent, 0.02),
-        side * (cw / 2 + 0.10), -ch * 0.05, i * (cd / 6)
+        box(cw * 1.12, ch * 0.86, 0.14, materials.cargoAccent, 0.01),
+        0, 0, (i * cd) / 14
       ));
     }
+    for (const sy of [-1, 1]) {
+      cargoGroup.add(place(
+        box(cw * 1.35, 0.18, cd, materials.cargoAccent, 0.02),
+        0, sy * (ch / 2 - 0.09), 0
+      ));
+    }
+  } else {
+    // Transformer: radiator banks down the sides and bushings on top.
+    for (const side of [-1, 1]) {
+      for (let i = -2; i <= 2; i++) {
+        cargoGroup.add(place(
+          box(0.16, ch * 0.62, 0.34, materials.cargoAccent, 0.02),
+          side * (cw / 2 + 0.10), -ch * 0.05, (i * cd) / 6
+        ));
+      }
+    }
+    for (const x of [-cw * 0.28, 0, cw * 0.28]) {
+      const bushing = new Mesh(new ConeGeometry(0.20, 0.85, 12), materials.cargoAccent);
+      cargoGroup.add(place(bushing, x, ch / 2 + 0.42, cd * 0.22));
+    }
   }
-  for (const x of [-cw * 0.28, 0, cw * 0.28]) {
-    const bushing = new Mesh(new ConeGeometry(0.20, 0.85, 12), materials.cargoAccent);
-    cargoGroup.add(place(bushing, x, ch / 2 + 0.42, cd * 0.22));
-  }
+
   // Lifting lugs
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
@@ -279,46 +318,53 @@ export function createLowboy(cargo, comHeight) {
     }
   }
 
-  cargoGroup.position.set(0, y(cargo.centerHeight), 0.4);
+  cargoGroup.position.set(0, y(cargo.centerHeight), deckMid);
   cargoGroup.traverse((o) => { o.castShadow = true; o.receiveShadow = true; });
   g.add(cargoGroup);
 
   // Chain tie-downs from the deck up over the load.
-  for (const sz of [-1, 1]) {
+  const chainCount = cd > 20 ? 4 : 2;
+  for (let i = 0; i < chainCount; i++) {
+    const z = deckMid + cd * (-0.38 + (0.76 * i) / Math.max(1, chainCount - 1));
     for (const sx of [-1, 1]) {
       const chain = new Mesh(
         new CylinderGeometry(0.028, 0.028, ch * 0.95, 6),
         materials.darkMetal
       );
       chain.rotation.z = sx * 0.34;
-      chain.position.set(
-        sx * (cw / 2 + 0.22),
-        y(cargo.centerHeight) - ch * 0.05,
-        0.4 + sz * cd * 0.34
-      );
+      chain.position.set(sx * (cw / 2 + 0.22), y(cargo.centerHeight) - ch * 0.05, z);
       g.add(chain);
     }
   }
 
   // OVERSIZE LOAD banner across the back, plus flags on the corners.
   const banner = makeBanner('OVERSIZE LOAD', 3.4, 0.62);
-  g.add(place(banner, 0, y(1.9), -8.9));
   banner.rotation.y = Math.PI;
+  g.add(place(banner, 0, y(1.9), rearZ - 1.4));
 
   for (const sx of [-1, 1]) {
-    const flag = new Mesh(new PlaneGeometry(0.45, 0.45), new MeshBasicMaterial({
-      color: 0xd8232a, side: DoubleSide,
-    }));
-    flag.rotation.y = Math.PI / 2;
-    g.add(place(flag, sx * (cw / 2 + 0.28), y(cargo.centerHeight + ch * 0.55), -cd * 0.42));
+    for (const sz of [-1, 1]) {
+      const flag = new Mesh(new PlaneGeometry(0.45, 0.45), new MeshBasicMaterial({
+        color: 0xd8232a, side: DoubleSide,
+      }));
+      flag.rotation.y = Math.PI / 2;
+      g.add(place(
+        flag,
+        sx * (cw / 2 + 0.28),
+        y(cargo.centerHeight + ch * 0.55),
+        deckMid + sz * cd * 0.42
+      ));
+    }
   }
 
-  g.userData.markers = [];
   // Amber clearance lights along the outriggers and across the tail.
+  g.userData.markers = [];
+  const markerCount = Math.max(4, Math.round(deckLen / 3.2));
   for (const sx of [-1, 1]) {
-    for (const z of [3.6, 0.4, -3.2, -7.4]) {
+    for (let i = 0; i < markerCount; i++) {
+      const z = deckRear + (deckLen * (i + 0.5)) / markerCount;
       const m = new Mesh(new BoxGeometry(0.10, 0.06, 0.06), lampMaterial(0xffa63a, 1));
-      place(m, sx * 1.98, deckY + 0.22, z);
+      place(m, sx * (halfW + 0.42), deckY + 0.22, z);
       g.add(m);
       g.userData.markers.push(m);
     }
@@ -326,7 +372,7 @@ export function createLowboy(cargo, comHeight) {
   g.userData.tailLights = [];
   for (const sx of [-1, 1]) {
     const t = new Mesh(new BoxGeometry(0.22, 0.14, 0.06), lampMaterial(0xff2a1a, 0.6));
-    place(t, sx * 1.2, y(1.0), -8.95);
+    place(t, sx * (halfW * 0.8), y(1.0), rearZ - 1.45);
     g.add(t);
     g.userData.tailLights.push(t);
   }

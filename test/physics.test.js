@@ -149,3 +149,57 @@ test('spring brakes drop when air pressure is lost', () => {
   console.log(`  at 20 psi, brake application = ${applied.toFixed(2)}`);
   assert.ok(applied > 0.9, 'spring brakes did not apply on air loss');
 });
+
+test('steering answers the way the driver expects', () => {
+  // The direction convention is easy to invert by accident and impossible to
+  // spot in a unit test that only checks magnitudes, so pin it explicitly.
+  //
+  // In this frame (+Z forward, +Y up, right-handed) the vehicle's right-hand
+  // side is -X, and a turn to the right is a NEGATIVE yaw rate about +Y.
+  const measure = (input) => {
+    const rig = ready();
+    drive(rig, 22, (r) => { r.throttle = 1; });
+    let yaw = 0;
+    let n = 0;
+    drive(rig, 4, (r, t) => {
+      r.throttle = 0.3;
+      r.steerInput = input;
+      if (t > 2) { yaw += r.tractor.body.angularVelocity.y; n++; }
+    });
+    return yaw / n;
+  };
+
+  const right = measure(1);
+  const left = measure(-1);
+  console.log(`  steer +1 -> yaw ${right.toFixed(3)} rad/s, steer -1 -> yaw ${left.toFixed(3)} rad/s`);
+  assert.ok(right < -0.05, `positive steer input should turn RIGHT (negative yaw), got ${right.toFixed(3)}`);
+  assert.ok(left > 0.05, `negative steer input should turn LEFT (positive yaw), got ${left.toFixed(3)}`);
+});
+
+test('the rig starts in the right-hand lane, not the oncoming one', async () => {
+  const { Route } = await import('../src/world/Route.js');
+  const route = new Route();
+  const s = 300;
+  const centre = route.positionAt(s, 0, new Vector3());
+  const offset = route.positionAt(s, route.laneWidth * 0.5, new Vector3());
+  const fwd = new Vector3(Math.sin(route.headingAt(s)), 0, Math.cos(route.headingAt(s)));
+  // Right of the direction of travel is -X rotated with the heading, i.e.
+  // cross(up, fwd) negated.
+  const right = new Vector3(0, 1, 0).cross(fwd).negate().normalize();
+  const dot = offset.sub(centre).normalize().dot(right);
+  console.log(`  lane offset lies ${dot > 0 ? 'RIGHT' : 'LEFT'} of travel (dot ${dot.toFixed(2)})`);
+  assert.ok(dot > 0.9, 'a positive lane offset must be the right-hand lane');
+});
+
+test('the trailer steers itself to reduce off-tracking', () => {
+  const rig = ready();
+  assert.ok(rig.autoTrailerSteer, 'command steer should be on by default');
+  // With the gooseneck articulated, the rear axles must command a real angle
+  // without the driver touching anything.
+  rig.trailerSteerInput = 0;
+  rig.yawB.angle = 0.25;
+  rig.applySteering(1);
+  console.log(`  articulation 14 deg -> rear axles ${(rig.trailerSteerAngle * 57.3).toFixed(1)} deg`);
+  assert.ok(Math.abs(rig.trailerSteerAngle) > 0.05,
+    'rear axles did not respond to articulation on their own');
+});

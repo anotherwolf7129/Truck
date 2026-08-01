@@ -1,7 +1,8 @@
 import { Vector3, CatmullRomCurve3 } from 'three';
 
 const _a = new Vector3();
-const _b = new Vector3();
+const _tan = new Vector3();
+const _lat = new Vector3();
 
 /**
  * The permitted route.
@@ -140,8 +141,14 @@ export class Route {
     for (let i = 0; i < raw.length; i++) {
       if (i > 0) acc += raw[i].distanceTo(raw[i - 1]);
       const tangent = this.curve.getTangentAt(i / (raw.length - 1)).normalize();
+
       // Lateral axis, level with the world so the road banks only where we say.
-      const lateral = new Vector3(tangent.z, 0, -tangent.x).normalize();
+      //
+      // With +Z forward and +Y up in a right-handed frame, the genuine
+      // right-hand side is -X, not +X. Getting this backwards mirrors the whole
+      // world: the steering answers the wrong way and the rig drives up the
+      // oncoming lane. Positive lateral is right of the centreline.
+      const lateral = new Vector3(-tangent.z, 0, tangent.x).normalize();
       this.samples.push({ s: acc, position: raw[i].clone(), tangent, lateral });
     }
     this.length = acc;
@@ -170,7 +177,21 @@ export class Route {
     return `${Math.floor(x / this.cell)},${Math.floor(z / this.cell)}`;
   }
 
-  /** Sample at arc length `s`, clamped to the route. */
+  /**
+   * The two samples bracketing arc length `s`, and how far between them it is.
+   * Samples sit about five metres apart, so anything that reads the route every
+   * frame has to interpolate -- snapping to the nearest one makes escorts and
+   * traffic advance in visible five-metre hops.
+   */
+  bracket(s) {
+    const n = this.samples.length;
+    const spacing = this.length / (n - 1);
+    const f = Math.max(0, Math.min(n - 1, s / spacing));
+    const i0 = Math.min(n - 1, Math.floor(f));
+    return { i0, i1: Math.min(n - 1, i0 + 1), t: f - i0 };
+  }
+
+  /** Nearest sample at arc length `s`. Coarse; for smooth motion use positionAt. */
   at(s, out = {}) {
     const clamped = Math.max(0, Math.min(this.length, s));
     const i = Math.min(
@@ -185,19 +206,30 @@ export class Route {
     return out;
   }
 
-  /** Heading in radians at arc length `s`. */
+  /** Heading in radians at arc length `s`, interpolated between samples. */
   headingAt(s) {
-    const { tangent } = this.at(s);
-    return Math.atan2(tangent.x, tangent.z);
+    const { i0, i1, t } = this.bracket(s);
+    _tan.copy(this.samples[i0].tangent).lerp(this.samples[i1].tangent, t);
+    if (_tan.lengthSq() < 1e-9) _tan.copy(this.samples[i0].tangent);
+    return Math.atan2(_tan.x, _tan.z);
   }
 
   /**
-   * World position of a point on the route, offset laterally.
+   * World position of a point on the route, offset laterally. Interpolated, so
+   * anything driven along the route moves smoothly rather than in steps.
    * @param lateral metres right of the centreline
    */
   positionAt(s, lateral = 0, out = new Vector3()) {
-    const sample = this.at(s);
-    out.copy(sample.position).addScaledVector(sample.lateral, lateral);
+    const { i0, i1, t } = this.bracket(s);
+    const a = this.samples[i0];
+    const b = this.samples[i1];
+    out.copy(a.position).lerp(b.position, t);
+    if (lateral !== 0) {
+      _lat.copy(a.lateral).lerp(b.lateral, t);
+      if (_lat.lengthSq() > 1e-9) _lat.normalize();
+      else _lat.copy(a.lateral);
+      out.addScaledVector(_lat, lateral);
+    }
     return out;
   }
 
@@ -256,12 +288,7 @@ export class Route {
 
   /** Interpolated centreline elevation at arc length `s`. */
   elevationAtS(s) {
-    const n = this.samples.length;
-    const spacing = this.length / (n - 1);
-    const f = Math.max(0, Math.min(n - 1, s / spacing));
-    const i0 = Math.min(n - 1, Math.floor(f));
-    const i1 = Math.min(n - 1, i0 + 1);
-    const t = f - i0;
+    const { i0, i1, t } = this.bracket(s);
     const y0 = this.samples[i0].position.y;
     const y1 = this.samples[i1].position.y;
     return y0 + (y1 - y0) * t;

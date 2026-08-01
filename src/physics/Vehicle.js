@@ -15,7 +15,10 @@ const _n = new Vector3();
 
 const LOCAL_UP = new Vector3(0, 1, 0);
 const LOCAL_FWD = new Vector3(0, 0, 1);
-const LOCAL_RIGHT = new Vector3(1, 0, 0);
+// With +Z forward and +Y up in a right-handed frame, the vehicle's right-hand
+// side points along -X. Naming it correctly here is what keeps steering,
+// roll and crosswind all agreeing about which way is which.
+const LOCAL_RIGHT = new Vector3(-1, 0, 0);
 
 /**
  * One wheel: a raycast suspension strut, a tire, and a brake.
@@ -260,7 +263,9 @@ export class VehicleUnit {
       _n.copy(w.contactNormal);
       body.localToWorldDir(LOCAL_FWD, _fwd);
       if (w.steerAngle !== 0) {
-        _fwd.applyAxisAngle(_up, w.steerAngle);
+        // Positive steer angle means "to the right", and turning toward -X is a
+        // negative rotation about the up axis.
+        _fwd.applyAxisAngle(_up, -w.steerAngle);
       }
       _fwd.addScaledVector(_n, -_fwd.dot(_n));
       if (_fwd.lengthSq() < 1e-8) continue;
