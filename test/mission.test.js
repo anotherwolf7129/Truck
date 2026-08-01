@@ -97,6 +97,7 @@ function runMission({ maxMinutes = 45, useEngineBrake = true, trailer = 'lowboy4
     convoy.update(dt, s, speed, loadHeight);
     traffic.update(dt, {
       convoy: { s, speed, length: rig.combinationLength },
+      chaseS: convoy.rearGuardS,
       blockades: convoy.blockades,
       route,
     });

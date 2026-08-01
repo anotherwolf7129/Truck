@@ -1,6 +1,20 @@
 import { Vector3 } from 'three';
 
 const _p = new Vector3();
+const _prev = new Vector3();
+const _delta = new Vector3();
+
+// Radians per second a car may swing its nose. Real cars cannot pivot; capping
+// the yaw rate is what turns a lateral position change into visible steering.
+const MAX_YAW_RATE = 2.0;
+
+/** Moves `from` toward `to` by at most `maxStep`, taking the short way round. */
+export function approachAngle(from, to, maxStep) {
+  let diff = to - from;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return from + Math.max(-maxStep, Math.min(maxStep, diff));
+}
 
 /**
  * Intelligent Driver Model acceleration.
@@ -60,13 +74,34 @@ export class TrafficVehicle {
     this.length = kind === 'truck' ? 16 : 4.6;
     this.width = kind === 'truck' ? 2.5 : 1.85;
 
-    this.updateTransform();
+    const h0 = route.headingAt(s);
+    this.heading = direction > 0 ? h0 : h0 + Math.PI;
+    route.positionAt(this.s, this.currentOffset, this.position);
   }
 
-  updateTransform() {
+  /**
+   * Places the vehicle and points it where it is actually going.
+   *
+   * Taking the heading straight from the route tangent makes a lane change look
+   * like the whole car sliding sideways -- a box on rails. Deriving it from the
+   * frame's real displacement instead means a car easing onto the shoulder
+   * turns into it and straightens up again, because that is what its motion is
+   * doing. The yaw is rate-limited so it reads as steering rather than snapping.
+   */
+  updateTransform(dt = 0) {
+    _prev.copy(this.position);
     this.route.positionAt(this.s, this.currentOffset, this.position);
-    const h = this.route.headingAt(this.s);
-    this.heading = this.direction > 0 ? h : h + Math.PI;
+
+    const routeHeading = this.route.headingAt(this.s);
+    let target = this.direction > 0 ? routeHeading : routeHeading + Math.PI;
+
+    if (dt > 0) {
+      _delta.subVectors(this.position, _prev);
+      // Below walking pace the displacement is too small to take a bearing from.
+      if (_delta.lengthSq() > 4e-4) target = Math.atan2(_delta.x, _delta.z);
+    }
+
+    this.heading = approachAngle(this.heading, target, MAX_YAW_RATE * Math.max(dt, 1e-3));
   }
 
   /**
@@ -104,19 +139,31 @@ export class TrafficVehicle {
       const rel = (convoy.s - this.s) * this.direction;
       const near = Math.abs(convoy.s - this.s);
 
+      // Arc length of the back of the combination, and of the chase car behind it.
+      const convoyTail = convoy.s - convoy.length;
+      const chaseS = world.chaseS ?? convoyTail - 20;
+
       if (this.direction < 0 && rel > -convoy.length && rel < 320) {
         // Oncoming and the convoy is approaching: pull onto the shoulder.
         this.targetOffset = -(route.laneWidth * 0.5 + route.shoulderWidth * 0.85);
         this.hazards = true;
         if (near < 190) { desired = 0; this.state = 'pulled-over'; }
-      } else if (this.direction > 0 && convoy.s > this.s && convoy.s - this.s < 40) {
-        // Being overtaken by the convoy from behind should not happen, but if
-        // the convoy catches this vehicle, ease right and let it by.
-        this.targetOffset = route.laneWidth * 0.5 + route.shoulderWidth * 0.5;
-        this.hazards = true;
-      } else if (this.direction > 0 && this.s > convoy.s && this.s - convoy.s < 500) {
-        // Ahead of the convoy in the same direction: the rear escort will not
-        // let anyone pass, so traffic behind simply queues at convoy speed.
+      } else if (this.direction > 0 && this.s < convoyTail && convoyTail - this.s < 700) {
+        // Caught up behind the load. Nobody passes an oversize move on a
+        // two-lane road -- the chase car is there precisely to stop it -- so
+        // this vehicle queues up and matches the convoy's pace.
+        //
+        // The chase car is treated as the leader, so the queue forms behind it
+        // rather than driving into it.
+        this.targetOffset = this.laneOffset;
+        this.hazards = false;
+        this.state = 'following-convoy';
+
+        const chaseGap = (chaseS - this.s) - (this.length * 0.5 + 4.5);
+        if (chaseGap < gap) {
+          gap = chaseGap;
+          closing = this.speed - Math.max(0, convoy.speed);
+        }
         desired = Math.min(desired, Math.max(0, convoy.speed));
       } else {
         this.targetOffset = this.laneOffset;
@@ -139,12 +186,14 @@ export class TrafficVehicle {
     }
 
     // --- Lateral ------------------------------------------------------------
-    // Lane changes and shoulder pull-offs are eased rather than snapped.
-    const rate = this.state === 'pulled-over' ? 1.4 : 0.9;
+    // Lane changes and shoulder pull-offs are eased rather than snapped. Fast
+    // enough to be off the road before the load arrives, slow enough that the
+    // car is steering onto the shoulder rather than being slid onto it.
+    const rate = this.state === 'pulled-over' ? 1.0 : 0.8;
     this.currentOffset += (this.targetOffset - this.currentOffset) * Math.min(1, rate * dt);
 
     this.s += this.speed * this.direction * dt;
-    this.updateTransform();
+    this.updateTransform(dt);
   }
 
   /** True once this vehicle has run off the end of the route. */

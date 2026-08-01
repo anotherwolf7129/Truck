@@ -1,6 +1,11 @@
 import { Vector3 } from 'three';
+import { approachAngle } from './Traffic.js';
 
 const _v = new Vector3();
+const _prev = new Vector3();
+const _delta = new Vector3();
+
+const MAX_YAW_RATE = 2.2;
 
 export const Role = {
   LEAD_POLICE: 'lead_police',
@@ -138,14 +143,30 @@ export class EscortVehicle {
     this.updateTransform();
   }
 
-  updateTransform() {
+  /**
+   * Places the unit and points it where it is actually going.
+   *
+   * Like the ambient traffic, the heading comes from the frame's real
+   * displacement rather than from the route tangent, so a unit swinging out to
+   * pass the load steers into the manoeuvre instead of crabbing sideways.
+   */
+  updateTransform(dt = 0) {
+    _prev.copy(this.position);
     this.route.positionAt(this.s, this.lateral, this.position);
-    this.heading = this.route.headingAt(this.s);
+
+    let target = this.route.headingAt(this.s);
+    if (dt > 0) {
+      _delta.subVectors(this.position, _prev);
+      if (_delta.lengthSq() > 4e-4) target = Math.atan2(_delta.x, _delta.z);
+    }
+
     // Parked across a side road, the unit sits at an angle to the highway so
     // it physically closes the mouth of the road.
     if (this.state === 'blocking' && this.assignment) {
-      this.heading += this.assignment.side * 1.15;
+      target = this.route.headingAt(this.s) + this.assignment.side * 1.15;
     }
+
+    this.heading = approachAngle(this.heading, target, MAX_YAW_RATE * Math.max(dt, 1e-3));
   }
 
   /**
@@ -171,8 +192,11 @@ export class EscortVehicle {
     this.speed = Math.max(0, this.speed);
 
     this.s += this.speed * dt;
-    this.lateral += (this.targetLateral - this.lateral) * Math.min(1, 1.6 * dt);
-    this.updateTransform();
+    // Move over briskly when the target is a different lane, gently when it is
+    // just a trim within one.
+    const lateralRate = Math.abs(this.targetLateral - this.lateral) > 1.5 ? 1.3 : 1.6;
+    this.lateral += (this.targetLateral - this.lateral) * Math.min(1, lateralRate * dt);
+    this.updateTransform(dt);
   }
 
   /** Comes to a stop at a fixed point, for blocking a junction. */
@@ -186,7 +210,7 @@ export class EscortVehicle {
     this.s += this.speed * dt;
     this.targetLateral = targetLateral;
     this.lateral += (this.targetLateral - this.lateral) * Math.min(1, 2.2 * dt);
-    this.updateTransform();
+    this.updateTransform(dt);
   }
 }
 
@@ -264,6 +288,11 @@ export class ConvoyManager {
   }
 
   get leadPilot() { return this.vehicles.find((v) => v.role === Role.LEAD_PILOT); }
+  get chase() { return this.vehicles.find((v) => v.role === Role.REAR_PILOT); }
+  /** Arc length of the rearmost escort, which is what following traffic queues behind. */
+  get rearGuardS() {
+    return Math.min(...this.vehicles.filter((v) => this.stations[v.role] < 0).map((v) => v.s));
+  }
   get police() { return this.vehicles.filter((v) => v.isPolice); }
 
   /**
@@ -317,10 +346,9 @@ export class ConvoyManager {
     const b = unit.assignment;
 
     if (b && unit.state === 'advance') {
-      // Pass the load on the shoulder, then take up the blocking position.
-      const passing = unit.s < this.convoyS + 40;
-      unit.targetLateral = passing
-        ? this.route.laneWidth * 0.5 + this.route.shoulderWidth * 0.7
+      // Get out of the load's lane, run past it, then take up the block.
+      unit.targetLateral = this.alongsideLoad(unit)
+        ? this.passingLateral()
         : this.route.laneWidth * 0.5;
       unit.lightsOn = true;
 
@@ -348,13 +376,41 @@ export class ConvoyManager {
     // No assignment: hold station, or catch back up after a release.
     const station = this.convoyS + this.stations[unit.role];
     const urgency = unit.state === 'rejoin' ? 1.8 : 1;
-    unit.targetLateral = unit.state === 'rejoin' && unit.s < this.convoyS
-      ? this.route.laneWidth * 0.5 + this.route.shoulderWidth * 0.7
+    unit.targetLateral = this.alongsideLoad(unit)
+      ? this.passingLateral()
       : this.route.laneWidth * 0.5;
     unit.lightsOn = true;
     unit.driveTo(dt, station, this.convoySpeed, urgency);
 
     if (unit.state === 'rejoin' && Math.abs(unit.s - station) < 25) unit.state = 'station';
+  }
+
+  /**
+   * Lane offset a unit uses to get past the load.
+   *
+   * The oncoming lane, not the shoulder. The load is wider than the lane it
+   * occupies -- it overhangs onto the shoulder on one side and over the centre
+   * line on the other -- so there is physically nowhere to squeeze by on the
+   * right. Using the oncoming lane is what escorts actually do, and it is only
+   * safe because the oncoming traffic has already pulled off for the load.
+   */
+  passingLateral() {
+    return -this.route.laneWidth * 0.6;
+  }
+
+  /**
+   * Is this unit level with the combination, or close enough that it is about
+   * to be? The margin has to cover the time the lane change itself takes, or
+   * the unit ends up moving over while it is already inside the load.
+   */
+  alongsideLoad(unit) {
+    // Generous, because the lane change itself is taken at a civilised rate --
+    // the unit has to be fully out of the lane before it draws level, not
+    // sliding across while it is already beside the load.
+    const margin = 70;
+    const tail = this.convoyS - this.convoyLength - margin;
+    const nose = this.convoyS + margin;
+    return unit.s > tail && unit.s < nose;
   }
 
   updatePilot(dt, unit) {

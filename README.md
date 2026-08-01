@@ -143,11 +143,25 @@ Four escorts, and the interesting behaviour is the **leapfrog**:
 - **Chase** (pilot car) — just off your tail, keeping following traffic back.
 
 Ambient traffic runs an Intelligent Driver Model. Oncoming vehicles take the
-shoulder and stop, because the load is wider than the lane it is travelling in and
-there is physically nowhere for them to go. Traffic behind queues at convoy speed
-rather than passing.
+shoulder and stop, because the load is wider than the lane it is travelling in
+and there is physically nowhere for them to go. Traffic catching up from behind
+queues up behind the chase car and stays there — nobody overtakes an oversize
+move on a two-lane road, which is exactly what the chase car is for.
 
-The mission test asserts all ten junctions are blocked before the load arrives.
+When a police unit needs to get ahead it uses the **oncoming lane**, not the
+shoulder: the load overhangs its own lane on both sides, so there is no room to
+squeeze past on the right, and the oncoming lane is clear because the oncoming
+traffic has already pulled off.
+
+Every vehicle's heading comes from its actual frame-to-frame motion rather than
+from the road's direction, so a car easing onto the shoulder steers into it and
+straightens up again instead of sliding sideways like a box on rails.
+
+`test/convoy.test.js` measures all of this: overlap with the load (0 cm), how
+far a following car ever gets past the tail (0 m), and the angle between each
+vehicle's heading and its direction of travel (1–2° for traffic, 8.5° peak for
+an escort mid-lane-change). The mission test asserts all ten junctions are
+blocked before the load arrives.
 
 ## The route
 
@@ -193,7 +207,7 @@ src/
   render/      Scene (sky, lighting, probe), Models, WorldMesh
   ui/          HUD, style
   core/        Input
-test/          physics.test.js, mission.test.js
+test/          physics.test.js, mission.test.js, convoy.test.js
 tools/         layout.mjs (load analysis), plus driving and browser harnesses
 ```
 

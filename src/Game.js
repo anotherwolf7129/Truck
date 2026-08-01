@@ -497,6 +497,7 @@ export class Game {
     this.convoy.update(dt, this.convoyS, this.convoySpeed, this.loadHeight);
     this.traffic.update(dt, {
       convoy: { s: this.convoyS, speed: this.convoySpeed, length: this.rig.combinationLength },
+      chaseS: this.convoy.rearGuardS,
       blockades: this.convoy.blockades,
       route: this.route,
     });
