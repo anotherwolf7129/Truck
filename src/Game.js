@@ -1,4 +1,4 @@
-import { Vector3, Group, Quaternion, Euler, MathUtils } from 'three';
+import { Vector3, Group, Quaternion, Euler, Color, MathUtils } from 'three';
 import { RenderContext } from './render/Scene.js';
 import { WorldMesh } from './render/WorldMesh.js';
 import {
@@ -16,6 +16,12 @@ import { HUD } from './ui/HUD.js';
 const _v = new Vector3();
 const _q = new Quaternion();
 const _e = new Euler();
+const _e2 = new Euler();
+
+// Tail lamp states for the kinematic vehicles.
+const TAIL_DIM = new Color(0xff2a1a).multiplyScalar(0.5);
+const TAIL_BRAKE = new Color(0xff2a1a).multiplyScalar(2.4);
+const TAIL_HAZARD = new Color(0xffa000).multiplyScalar(2.2);
 
 const FIXED_DT = 1 / 200;
 const MAX_STEPS = 12;
@@ -60,6 +66,7 @@ export class Game {
     // --- State ---------------------------------------------------------------
     this.convoyS = 0;
     this.convoySpeed = 0;
+    this.convoyLateral = this.route.laneWidth * 0.5;
     this.advisoryMph = 45;
     this.clockHour = 9.25;
     this.cameraMode = 'chase';
@@ -271,6 +278,10 @@ export class Game {
     const proj = this.route.project(p.x, p.z);
     this.convoyS = proj.s;
     this.convoySpeed = this.rig.tractor.forwardSpeed;
+    // Where the load is sitting across the road, so the escorts and the traffic
+    // give way to where it actually is rather than where the lane is.
+    const load = this.route.project(this.rig.trailer.body.position.x, this.rig.trailer.body.position.z);
+    this.convoyLateral = load.lateral;
     this.advisoryMph = this.route.advisorySpeedAt(this.convoyS);
     this.offRoute = Math.abs(proj.lateral) > this.route.roadHalfWidth + 6;
 
@@ -317,12 +328,43 @@ export class Game {
     }
   }
 
+  /**
+   * Puts a kinematic vehicle's mesh on the road.
+   *
+   * These vehicles are simulated as an arc length and a lane offset, so their
+   * pose has to be reconstructed here: sat on the terrain, pitched with the
+   * grade, yawed into whatever lateral move they are making, and with the wheels
+   * rolling and steering to match. Without the last part they read as boxes
+   * sliding along the road rather than cars driving down it.
+   */
+  placeRoadVehicle(mesh, pose, heading, { brake = false, hazard = false } = {}) {
+    const p = pose.position;
+    mesh.position.set(p.x, this.ground.heightAt(p.x, p.z), p.z);
+    _e.set(pose.pitch, heading, 0, 'YXZ');
+    mesh.quaternion.setFromEuler(_e);
+
+    const wheels = mesh.userData.wheels;
+    if (wheels) {
+      _e2.set(pose.wheelSpin, 0, 0, 'YXZ');
+      for (const w of wheels) w.quaternion.setFromEuler(_e2);
+      _e2.set(pose.wheelSpin, pose.steerAngle, 0, 'YXZ');
+      for (const w of mesh.userData.steeredWheels ?? []) w.quaternion.setFromEuler(_e2);
+    }
+
+    const tails = mesh.userData.tailLights;
+    if (tails) {
+      const flash = hazard && Math.sin(this.elapsed * 6) > 0;
+      const colour = flash ? TAIL_HAZARD : (brake ? TAIL_BRAKE : TAIL_DIM);
+      for (const t of tails) t.material.color.copy(colour);
+    }
+  }
+
   syncEscorts(dt) {
     const t = this.elapsed;
     for (const { vehicle, mesh } of this.escortVisuals) {
-      const h = this.ground.heightAt(vehicle.position.x, vehicle.position.z);
-      mesh.position.set(vehicle.position.x, h, vehicle.position.z);
-      mesh.rotation.y = vehicle.heading;
+      this.placeRoadVehicle(mesh, vehicle.pose, vehicle.heading, {
+        brake: vehicle.speed < this.convoySpeed - 1,
+      });
 
       // Beacons: police alternate red and blue, pilot cars run amber.
       const beacons = mesh.userData.beacons;
@@ -351,9 +393,10 @@ export class Game {
         this.render.scene.add(mesh);
         this.trafficVisuals.set(v.id, mesh);
       }
-      const h = this.ground.heightAt(v.position.x, v.position.z);
-      mesh.position.set(v.position.x, h, v.position.z);
-      mesh.rotation.y = v.heading;
+      this.placeRoadVehicle(mesh, v.pose, v.heading, {
+        brake: v.brakeLight || v.speed < 0.2,
+        hazard: v.hazards,
+      });
     }
     // Retire meshes whose vehicles have been recycled.
     for (const [id, mesh] of this.trafficVisuals) {
@@ -497,9 +540,17 @@ export class Game {
     this.stepPhysics(dt);
     this.updateRouteState();
 
-    this.convoy.update(dt, this.convoyS, this.convoySpeed, this.loadHeight);
+    const load = {
+      lateral: this.convoyLateral,
+      halfWidth: this.rig.cargo.size.x * 0.5,
+      length: this.convoy.convoyLength,
+    };
+    // A unit crossing to a side road looks before it swings over.
+    this.convoy.traffic = this.traffic.vehicles;
+    this.convoy.update(dt, this.convoyS, this.convoySpeed, this.loadHeight, load);
     this.traffic.update(dt, {
-      convoy: { s: this.convoyS, speed: this.convoySpeed, length: 27 },
+      convoy: { s: this.convoyS, speed: this.convoySpeed, ...load },
+      escorts: this.convoy.vehicles,
       blockades: this.convoy.blockades,
       route: this.route,
     });

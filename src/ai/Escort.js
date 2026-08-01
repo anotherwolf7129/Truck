@@ -1,4 +1,5 @@
 import { Vector3 } from 'three';
+import { RoadPose } from './RoadPose.js';
 
 const _v = new Vector3();
 
@@ -126,8 +127,6 @@ export class EscortVehicle {
     this.speed = 0;
     this.maxSpeed = this.isPolice ? 38 : 33;   // m/s
 
-    this.position = new Vector3();
-    this.heading = 0;
     this.state = 'station';      // station | advance | blocking | rejoin
     this.assignment = null;      // Blockade being worked
     this.lightsOn = false;
@@ -135,17 +134,32 @@ export class EscortVehicle {
 
     this.length = 4.9;
     this.width = 1.95;
-    this.updateTransform();
+
+    this.pose = new RoadPose(route, { wheelRadius: 0.34, wheelbase: 2.85 });
+    this.position = this.pose.position;
+    this.heading = 0;
+    this.blockAngle = 0;         // eased angle across the mouth of a side road
+    this.place(s, this.lateral);
   }
 
-  updateTransform() {
-    this.route.positionAt(this.s, this.lateral, this.position);
-    this.heading = this.route.headingAt(this.s);
-    // Parked across a side road, the unit sits at an angle to the highway so
-    // it physically closes the mouth of the road.
-    if (this.state === 'blocking' && this.assignment) {
-      this.heading += this.assignment.side * 1.15;
-    }
+  /** Snaps to a point on the route, for a standing start or a teleport. */
+  place(s, lateral) {
+    this.s = s;
+    this.lateral = lateral;
+    this.targetLateral = lateral;
+    this.blockAngle = 0;
+    this.pose.reset(s, lateral);
+    this.heading = this.pose.heading;
+  }
+
+  updateTransform(dt = 0) {
+    this.pose.update(dt, this.s, this.lateral, this.speed);
+    // Parked across a side road, the unit sits at an angle to the highway so it
+    // physically closes the mouth of the road. Swinging into that angle takes a
+    // moment, the same as it would in the car.
+    const want = this.state === 'blocking' && this.assignment ? this.assignment.side * 1.15 : 0;
+    this.blockAngle += (want - this.blockAngle) * Math.min(1, 2.5 * dt);
+    this.heading = this.pose.heading + this.blockAngle;
   }
 
   /**
@@ -172,7 +186,7 @@ export class EscortVehicle {
 
     this.s += this.speed * dt;
     this.lateral += (this.targetLateral - this.lateral) * Math.min(1, 1.6 * dt);
-    this.updateTransform();
+    this.updateTransform(dt);
   }
 
   /** Comes to a stop at a fixed point, for blocking a junction. */
@@ -185,8 +199,17 @@ export class EscortVehicle {
 
     this.s += this.speed * dt;
     this.targetLateral = targetLateral;
-    this.lateral += (this.targetLateral - this.lateral) * Math.min(1, 2.2 * dt);
-    this.updateTransform();
+    // Getting across the road to the mouth of a side road is a manoeuvre done
+    // at walking pace with the lights on, not a 70 mph swerve: the unit brakes
+    // to the stop line first and crosses as it arrives.
+    const crossRate = 2.2 * Math.max(0, 1 - Math.abs(this.speed) / 12);
+    this.lateral += (this.targetLateral - this.lateral) * Math.min(1, crossRate * dt);
+    this.updateTransform(dt);
+  }
+
+  /** True if this unit shares any lane space with an occupied span of road. */
+  overlapsLaterally(lateral, halfWidth) {
+    return Math.abs(lateral - this.lateral) < halfWidth + this.width * 0.5 + 0.35;
   }
 }
 
@@ -195,7 +218,7 @@ export class EscortVehicle {
  *
  * The interesting behaviour is the leapfrog: with two police units and a string
  * of junctions ahead, a unit holds one intersection until the load is through,
- * then releases and runs up the shoulder past the load to take the next one
+ * then releases and runs up the closed lane past the load to take the next one
  * that nobody is covering. Done properly the load never stops, and to the
  * driver it looks like every side road on the route happens to be closed.
  */
@@ -227,6 +250,17 @@ export class ConvoyManager {
     this.convoySpeed = 0;
     this.convoyLength = 27;
 
+    // Where the load actually sits across the road. The escorts have to get
+    // around it to leapfrog, and it is wide enough that "use the shoulder" is
+    // not automatically an answer -- so both of these are kept current from the
+    // rig rather than assumed.
+    this.loadLateral = route.laneWidth * 0.5;
+    this.loadHalfWidth = rig?.cargo?.size ? rig.cargo.size.x * 0.5 : 1.9;
+
+    // Ambient traffic, if the caller wants a unit to look before it swings
+    // across the road. Optional: without it the road beside it is assumed clear.
+    this.traffic = null;
+
     // The height pole on the lead car is set just above the load, so it strikes
     // anything the load would strike.
     this.loadHeight = 0;
@@ -239,14 +273,11 @@ export class ConvoyManager {
   reset(s) {
     this.convoyS = s;
     for (const v of this.vehicles) {
-      v.s = s + this.stations[v.role];
       v.speed = 0;
       v.state = 'station';
       v.assignment = null;
       v.lightsOn = v.isPolice;
-      v.lateral = this.route.laneWidth * 0.5;
-      v.targetLateral = v.lateral;
-      v.updateTransform();
+      v.place(s + this.stations[v.role], this.route.laneWidth * 0.5);
     }
     for (const b of this.blockades) {
       b.active = false;
@@ -307,19 +338,115 @@ export class ConvoyManager {
     }
   }
 
+  /**
+   * The lane position a unit uses to get around the load.
+   *
+   * A 3.66 m load in a 3.7 m lane leaves nothing usable beside it: the shoulder
+   * is only 2.4 m and the load already overhangs into most of it. So the pass
+   * goes down the other side of the road -- which is exactly why the escorts
+   * close the oncoming lane and why oncoming traffic is sitting on the far
+   * shoulder while the load goes through.
+   */
+  passLateral(unit) {
+    const r = this.route;
+    const half = unit.width * 0.5;
+    const clearance = 0.6;
+    const roomRight = r.roadHalfWidth - (this.loadLateral + this.loadHalfWidth);
+    if (roomRight >= half * 2 + clearance) {
+      return this.loadLateral + this.loadHalfWidth + clearance + half;
+    }
+    return Math.min(
+      -r.laneWidth * 0.5,
+      this.loadLateral - this.loadHalfWidth - clearance - half
+    );
+  }
+
+  /**
+   * Whether a unit can swing across the road to the mouth of a side road yet.
+   *
+   * The unit is stopped at the junction by this point and the junction is held
+   * from the moment it arrives, so waiting for a gap costs the convoy nothing --
+   * and sweeping across the oncoming lane into whatever is there costs a lot.
+   */
+  laneClear(unit, targetLateral, crossSeconds = 2.2) {
+    if (!this.traffic || this.traffic.length === 0) return true;
+    if (Math.abs(targetLateral - unit.lateral) < 0.4) return true;
+
+    const lo = Math.min(unit.lateral, targetLateral) - unit.width * 0.5 - 0.4;
+    const hi = Math.max(unit.lateral, targetLateral) + unit.width * 0.5 + 0.4;
+
+    for (const v of this.traffic) {
+      const halfWidth = v.width * 0.5;
+      if (v.currentOffset + halfWidth < lo || v.currentOffset - halfWidth > hi) continue;
+
+      // Only whoever is actually closing on the unit matters: a slower car it
+      // has already gone by is not a reason to wait.
+      const along = v.direction > 0 ? v.speed : -v.speed;
+      const separation = v.s - unit.s;
+      const closing = separation > 0 ? unit.speed - along : along - unit.speed;
+      const margin = (v.length + unit.length) * 0.5 + Math.max(0, closing) * crossSeconds + 1.5;
+      if (Math.abs(separation) < margin) return false;
+    }
+    return true;
+  }
+
+  /**
+   * A unit parked off the road comes back onto it when the shoulder beside it
+   * is clear.
+   *
+   * Leaving a junction means crossing the shoulder that oncoming traffic has
+   * pulled off onto, so the unit runs up the verge until it is past whatever is
+   * parked there. Only the lateral move waits; it keeps making ground the whole
+   * time.
+   */
+  mergeBack(unit, want) {
+    if (Math.abs(unit.lateral) < this.route.roadHalfWidth - 1) return want;
+    return this.laneClear(unit, want) ? want : unit.lateral;
+  }
+
+  /**
+   * Stops a unit from driving through the load.
+   *
+   * Station keeping is a speed controller, and a speed controller will happily
+   * walk a car straight into an 87 ft combination if the load slows down or the
+   * unit is in a hurry. While a unit shares lane space with the load it is held
+   * at whichever end of it the unit is on; it only gets past once it has
+   * actually moved over.
+   */
+  separate(unit) {
+    if (!unit.overlapsLaterally(this.loadLateral, this.loadHalfWidth)) return;
+
+    const nose = this.convoyS + 1.5;
+    const tail = this.convoyS - this.convoyLength - 1.5;
+    const front = unit.s + unit.length * 0.5;
+    const back = unit.s - unit.length * 0.5;
+    if (front < tail || back > nose) return;   // already clear of the combination
+
+    if (unit.s > (nose + tail) * 0.5) {
+      // Ahead of the load: do not get run over by it.
+      unit.s = nose + unit.length * 0.5;
+      unit.speed = Math.max(unit.speed, this.convoySpeed);
+    } else {
+      // Behind it: sit on the tail until there is room to go by.
+      unit.s = tail - unit.length * 0.5;
+      unit.speed = Math.min(unit.speed, this.convoySpeed);
+    }
+  }
+
   updatePolice(dt, unit) {
     const b = unit.assignment;
 
     if (b && unit.state === 'advance') {
-      // Pass the load on the shoulder, then take up the blocking position.
+      // Move out into the closed lane, get by the load, then take up the
+      // blocking position.
       const passing = unit.s < this.convoyS + 40;
-      unit.targetLateral = passing
-        ? this.route.laneWidth * 0.5 + this.route.shoulderWidth * 0.7
-        : this.route.laneWidth * 0.5;
+      unit.targetLateral = this.mergeBack(
+        unit, passing ? this.passLateral(unit) : this.route.laneWidth * 0.5);
       unit.lightsOn = true;
 
       const stopS = b.s - 6;
       unit.driveTo(dt, stopS, this.convoySpeed, 1.9);
+      this.separate(unit);
 
       if (unit.s >= stopS - 12) {
         unit.state = 'blocking';
@@ -334,19 +461,24 @@ export class ConvoyManager {
 
     if (b && unit.state === 'blocking') {
       unit.lightsOn = true;
-      // Sit across the mouth of the side road.
-      unit.holdAt(dt, b.s, b.side * (this.route.roadHalfWidth + 1.5));
+      // Sit across the mouth of the side road, once there is room to get over.
+      const across = b.side * (this.route.roadHalfWidth + 1.5);
+      unit.holdAt(dt, b.s, this.laneClear(unit, across) ? across : unit.lateral);
       return;
     }
 
     // No assignment: hold station, or catch back up after a release.
     const station = this.convoyS + this.stations[unit.role];
     const urgency = unit.state === 'rejoin' ? 1.8 : 1;
-    unit.targetLateral = unit.state === 'rejoin' && unit.s < this.convoyS
-      ? this.route.laneWidth * 0.5 + this.route.shoulderWidth * 0.7
-      : this.route.laneWidth * 0.5;
+    // A unit coming back up from a released junction has the whole convoy and
+    // the queue behind it in the way, so it makes the run in the closed lane and
+    // only merges back once it is at its station.
+    const overtaking = unit.state === 'rejoin' && unit.s < station - 10;
+    unit.targetLateral = this.mergeBack(
+      unit, overtaking ? this.passLateral(unit) : this.route.laneWidth * 0.5);
     unit.lightsOn = true;
     unit.driveTo(dt, station, this.convoySpeed, urgency);
+    this.separate(unit);
 
     if (unit.state === 'rejoin' && Math.abs(unit.s - station) < 25) unit.state = 'station';
   }
@@ -356,6 +488,7 @@ export class ConvoyManager {
     unit.targetLateral = this.route.laneWidth * 0.5;
     unit.lightsOn = true;
     unit.driveTo(dt, station, this.convoySpeed, 1.1);
+    this.separate(unit);
   }
 
   unitName(unit) {
@@ -412,12 +545,22 @@ export class ConvoyManager {
     }
   }
 
-  update(dt, convoyS, convoySpeed, loadHeight) {
+  /**
+   * @param load  optional live geometry of the combination:
+   *              { lateral, halfWidth, length } in route coordinates
+   */
+  update(dt, convoyS, convoySpeed, loadHeight, load = null) {
     this.time += dt;
     this.convoyS = convoyS;
     this.convoySpeed = Math.max(0, convoySpeed);
     this.loadHeight = loadHeight;
     this.poleHeight = loadHeight + 0.08;
+
+    if (load) {
+      if (Number.isFinite(load.lateral)) this.loadLateral = load.lateral;
+      if (Number.isFinite(load.halfWidth)) this.loadHalfWidth = load.halfWidth;
+      if (Number.isFinite(load.length)) this.convoyLength = load.length;
+    }
 
     this.assignBlockades();
 

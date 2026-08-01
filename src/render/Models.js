@@ -363,25 +363,42 @@ function carBody(bodyMat, roofMat = bodyMat) {
   g.add(place(box(1.70, 0.54, 2.30, roofMat, 0.18), 0, 0.96, -0.18));
   g.add(place(box(1.60, 0.40, 2.0, materials.glass, 0.10), 0, 0.98, -0.16));
 
+  g.userData.tailLights = [];
   for (const sx of [-1, 1]) {
     const hl = new Mesh(new BoxGeometry(0.34, 0.14, 0.06), lampMaterial(0xfff2d0, 1));
     place(hl, sx * 0.62, 0.50, 2.30);
     g.add(hl);
+    // Each tail light gets its own material so the brake and hazard states can
+    // be driven per car.
     const tl = new Mesh(new BoxGeometry(0.30, 0.14, 0.06), lampMaterial(0xff2a1a, 0.5));
     place(tl, sx * 0.62, 0.52, -2.30);
     g.add(tl);
+    g.userData.tailLights.push(tl);
   }
   return g;
 }
 
-function wheelsForCar(g) {
+/**
+ * Adds the road wheels and records them so the vehicle controllers can roll and
+ * steer them. A car whose wheels never turn reads as a box being slid along the
+ * road no matter how good the body is.
+ */
+function wheelsForCar(g, { radius = 0.34, width = 0.22, front = 1.42, rear = -1.42, track = 0.86 } = {}) {
+  const wheels = [];
+  const steered = [];
   for (const sx of [-1, 1]) {
-    for (const sz of [1.42, -1.42]) {
-      const w = createWheel(0.34, 0.22, false);
-      w.position.set(sx * 0.86, 0.34, sz);
+    for (const sz of [front, rear]) {
+      const w = createWheel(radius, width, false);
+      w.position.set(sx * track, radius, sz);
       g.add(w);
+      wheels.push(w);
+      if (sz === front) steered.push(w);
     }
   }
+  g.userData.wheels = wheels;
+  g.userData.steeredWheels = steered;
+  g.userData.wheelRadius = radius;
+  return g;
 }
 
 /** Police cruiser with a roof light bar. */
@@ -464,12 +481,26 @@ export function createTrafficVehicle(kind = 'car', seed = 0) {
     g.add(place(box(2.4, 1.5, 5.4, materials.paintWhite, 0.10), 0, 1.35, -3.2));
     g.add(place(box(2.3, 1.5, 2.1, materials.paintWhite, 0.12), 0, 1.30, 1.0));
     g.add(place(box(2.0, 0.7, 0.08, materials.glass, 0.03), 0, 1.62, 2.02));
+    const wheels = [];
+    const steered = [];
     for (const sx of [-1, 1]) {
       for (const sz of [1.4, -1.6, -3.0]) {
         const w = createWheel(0.46, 0.26, sz < 0);
         w.position.set(sx * 0.94, 0.46, sz);
         g.add(w);
+        wheels.push(w);
+        if (sz > 0) steered.push(w);
       }
+    }
+    g.userData.wheels = wheels;
+    g.userData.steeredWheels = steered;
+    g.userData.wheelRadius = 0.46;
+    g.userData.tailLights = [];
+    for (const sx of [-1, 1]) {
+      const tl = new Mesh(new BoxGeometry(0.26, 0.16, 0.06), lampMaterial(0xff2a1a, 0.5));
+      place(tl, sx * 1.0, 0.9, -5.92);
+      g.add(tl);
+      g.userData.tailLights.push(tl);
     }
     return g;
   }

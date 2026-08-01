@@ -297,14 +297,24 @@ export class Route {
     return run > 0.01 ? _a.y / run : 0;
   }
 
-  /** Curvature at arc length `s`, 1/metres. Used for advisory speeds. */
-  curvatureAt(s, window = 30) {
+  /**
+   * Signed curvature at arc length `s`, 1/metres. Positive turns right.
+   *
+   * The sign is what lets an AI driver point its front wheels the way the road
+   * actually goes instead of tracking the centreline with the wheels straight.
+   */
+  signedCurvatureAt(s, window = 30) {
     const h1 = this.headingAt(s - window / 2);
     const h2 = this.headingAt(s + window / 2);
     let d = h2 - h1;
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
-    return Math.abs(d) / window;
+    return d / window;
+  }
+
+  /** Curvature at arc length `s`, 1/metres. Used for advisory speeds. */
+  curvatureAt(s, window = 30) {
+    return Math.abs(this.signedCurvatureAt(s, window));
   }
 
   /**
