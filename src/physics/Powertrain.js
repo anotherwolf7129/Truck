@@ -102,6 +102,8 @@ export class Powertrain {
     // capacity falls away as it cooks, so picking the right gear matters.
     this.clutchTempC = 20;
     this.clutchWear = 0;
+    this.overRev = false;
+    this.overRevDamage = 0;
 
     this.outputTorque = 0;
     this.wheelTorque = 0;
@@ -194,7 +196,14 @@ export class Powertrain {
       const target = Math.max(this.idleRpm, this.idleRpm + this.throttle * 900);
       this.rpm += (target - this.rpm) * Math.min(1, 6 * dt);
     } else {
-      this.rpm = drivenRpm;
+      // The road drives the engine through an engaged clutch, so far too tall a
+      // downshift really can spin it past the governor. It cannot go
+      // arbitrarily high though: past the float point the valvetrain gives up,
+      // which is modelled as a hard ceiling plus a damage counter rather than a
+      // five-figure tachometer reading.
+      this.overRev = drivenRpm > this.maxRpm * 1.08;
+      if (this.overRev) this.overRevDamage += (drivenRpm - this.maxRpm) * dt * 1e-5;
+      this.rpm = Math.min(drivenRpm, this.maxRpm * 1.22);
     }
     this.applyGovernor(dt);
 
@@ -267,19 +276,41 @@ export class Powertrain {
    */
   autoShift(dt, wheelRadius, roadSpeed) {
     this._shiftTimer = Math.max(0, (this._shiftTimer ?? 0) - dt);
-    if (this._shiftTimer > 0 || this.inReverse || this.neutral) return;
+    if (this.inReverse || this.neutral) return;
 
     const wheelOmega = Math.abs(roadSpeed) / wheelRadius;
     const rpmIn = (g) => (wheelOmega * GEAR_RATIOS[g] * this.finalDrive) / RPM_TO_RADS;
+    const current = rpmIn(this.gear);
 
-    // Upshift once the next gear still pulls above peak torque; downshift
-    // before the engine falls out of the band and starts lugging.
-    if (this.gear < GEAR_RATIOS.length - 1 && rpmIn(this.gear) > 1750 && rpmIn(this.gear + 1) > 1150) {
+    // Hitting a grade at road speed means dropping a lot of gears in a hurry.
+    // Waiting for the engine to lug down one ratio at a time loses more speed
+    // on every shift than the next gear can pull back, and the rig walks itself
+    // to a stop halfway up -- so a badly lugging engine skips straight to the
+    // gear that suits the road speed instead of stepping down.
+    if (current < 900 && this.gear > 0) {
+      let best = this.gear;
+      for (let g = this.gear - 1; g >= 0; g--) {
+        if (rpmIn(g) <= this.maxRpm * 0.92) best = g;
+        if (rpmIn(g) >= 1450) break;
+      }
+      if (best !== this.gear) {
+        this.gear = best;
+        this._shiftTimer = 0.3;
+        return;
+      }
+    }
+
+    if (this._shiftTimer > 0) return;
+
+    // Upshift once the next gear still pulls in the torque band; downshift
+    // before the engine falls out of it. The band is wide on a big diesel, but
+    // under this much load the bottom of it is where the rig stops climbing.
+    if (this.gear < GEAR_RATIOS.length - 1 && current > 1800 && rpmIn(this.gear + 1) > 1300) {
       this.gear++;
       this._shiftTimer = 0.75;
-    } else if (this.gear > 0 && rpmIn(this.gear) < 1150 && rpmIn(this.gear - 1) < 2000) {
+    } else if (this.gear > 0 && current < 1300 && rpmIn(this.gear - 1) < this.maxRpm * 0.92) {
       this.gear--;
-      this._shiftTimer = 0.55;
+      this._shiftTimer = 0.35;
     }
   }
 }

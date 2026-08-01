@@ -24,10 +24,19 @@ export class BrakeGroup {
    * @param maxTorque peak torque per wheel at full application, cold, Nm
    * @param thermalMass larger = slower to heat and cool
    */
-  constructor({ maxTorque = 14000, thermalMass = 26000, coolingArea = 62, lag = 0.18 } = {}) {
+  /**
+   * @param thermalMass  J/K. A drum, hub and shoes come to roughly 26 kJ/K.
+   * @param coolingBase  W/K dissipated standing still.
+   * @param coolingSpeed extra W/K per m/s of airflow over the drum.
+   */
+  constructor({
+    maxTorque = 14000, thermalMass = 26000, lag = 0.18,
+    coolingBase = 9, coolingSpeed = 2.4,
+  } = {}) {
     this.maxTorque = maxTorque;
     this.thermalMass = thermalMass;
-    this.coolingArea = coolingArea;
+    this.coolingBase = coolingBase;
+    this.coolingSpeed = coolingSpeed;
     this.lag = lag;
 
     this.applied = 0;      // actual applied fraction after lag
@@ -67,7 +76,14 @@ export class BrakeGroup {
    */
   addHeat(dt, power, airspeed) {
     this.tempC += (power * dt) / this.thermalMass;
-    const h = this.coolingArea * (1.6 + 0.9 * airspeed); // W/K, forced convection
+
+    // Forced convection off the drum. A drum brake sheds tens of watts per
+    // kelvin, not hundreds -- it is a lump of iron in still air behind a wheel,
+    // and that poor cooling is precisely why a long descent defeats it. Holding
+    // a loaded rig on a nine percent grade puts hundreds of kilowatts into the
+    // brakes; they cannot shed a fraction of that, so the temperature runs away
+    // and the fade curve takes over.
+    const h = this.coolingBase + this.coolingSpeed * Math.abs(airspeed);
     this.tempC -= ((this.tempC - AMBIENT_C) * h * dt) / this.thermalMass;
     if (this.tempC < AMBIENT_C) this.tempC = AMBIENT_C;
   }

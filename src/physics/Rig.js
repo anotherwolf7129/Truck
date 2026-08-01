@@ -12,6 +12,10 @@ const _tmp = new Vector3();
 
 const N_TO_LB = 0.2248089431;
 
+// Every pivot on the combination sits at this height above the road, which is
+// where a real fifth wheel plate lives.
+const COUPLING_HEIGHT = 1.329;
+
 /**
  * The complete heavy haul combination: 6x4 tractor, two-axle jeep dolly, and a
  * multi-axle lowboy carrying the load.
@@ -56,7 +60,7 @@ export class Rig {
     // forward onto the tractor's drives instead of levering the nose light.
     this.hitchB = new BallJoint(
       this.jeep.body, new Vector3(0, 0.337, -0.30),
-      this.trailer.body, new Vector3(0, -0.545, 6.30)
+      this.trailer.body, new Vector3(0, COUPLING_HEIGHT - this.trailer.comHeight, 6.30)
     );
     this.rollB = new RollCoupling(this.jeep.body, this.trailer.body, { stiffness: 0.88 });
     this.yawB = new YawLimit(this.jeep.body, this.trailer.body, { limit: 1.30 });
@@ -197,7 +201,24 @@ export class Rig {
    * operated either by the driver or by a steerman walking alongside.
    */
   buildTrailer(cargo) {
-    const mountY = -1.201;
+    const trailerTare = 14000;
+    const mass = trailerTare + cargo.mass;
+    const deckHeight = 0.55;
+
+    // The load dominates the combined centre of gravity, and it sits high. This
+    // is the single biggest handling factor on the rig: it sets the rollover
+    // threshold, and it is why these moves crawl through corners a bobtail
+    // tractor would take at forty.
+    const comHeight = (cargo.mass * cargo.centerHeight + trailerTare * 0.90) / mass;
+
+    // Suspension geometry is derived from that centre of gravity rather than
+    // hardcoded, so changing the load cannot silently leave the wheels buried
+    // in the road or hanging above it.
+    const radius = 0.46;
+    const restLength = 0.26;
+    const staticCompression = 0.047;
+    const mountY = -(comHeight - (restLength - staticCompression) - radius);
+
     const wheels = [];
     const axleZ = [-4.10, -5.45, -6.80, -8.15];
     axleZ.forEach((z, i) => {
@@ -205,9 +226,9 @@ export class Rig {
         wheels.push(new Wheel({
           position: new Vector3(side * 0.98, mountY, z),
           dual: true,
-          radius: 0.46,
+          radius,
           tire: TRUCK_TIRE,
-          restLength: 0.26,
+          restLength,
           stiffness: 700000,
           damping: 40000,
           maxTravel: 0.16,
@@ -220,25 +241,15 @@ export class Rig {
       }
     });
 
-    const trailerTare = 14000;
-    const mass = trailerTare + cargo.mass;
-
     const unit = new VehicleUnit({
       name: 'trailer',
       mass,
-      size: new Vector3(3.6, 3.2, 16.0),
+      size: new Vector3(3.6, cargo.size.y, 16.0),
       wheels,
-      position: new Vector3(0, 1.874, -10.90),
+      position: new Vector3(0, comHeight, -10.90),
     });
-
-    // The cargo dominates the combined inertia, and it sits high. A tall,
-    // heavy deck load is the single biggest handling factor on this rig -- it
-    // is what sets the rollover threshold, and it is why these moves crawl
-    // through corners that a bobtail tractor would take at 40.
-    const comHeight =
-      (cargo.mass * cargo.centerHeight + trailerTare * 0.90) / mass;
     unit.comHeight = comHeight;
-    unit.deckHeight = 0.55;
+    unit.deckHeight = deckHeight;
     unit.antiRollStiffness = 420000;
     unit.cargo = cargo;
 
@@ -251,7 +262,7 @@ export class Rig {
 
     // Underside of the well deck. At 0.55 m off the road this is the lowest
     // point on the whole combination and the first thing to touch on a crest.
-    const deckLocalY = 0.55 - comHeight;
+    const deckLocalY = deckHeight - comHeight;
     unit.chassisPoints = [
       new Vector3(-1.3, deckLocalY, 4.6), new Vector3(1.3, deckLocalY, 4.6),
       new Vector3(-1.3, deckLocalY, 0.0), new Vector3(1.3, deckLocalY, 0.0),
@@ -331,6 +342,19 @@ export class Rig {
     // instead of splitting it evenly into the wheel that is already spinning.
     if (this.diffLock) wheelTorque *= 1.0;
 
+    // Reflect the engine and gearbox inertia down to the drive wheels. Through
+    // a 33:1 crawler gear this is three orders of magnitude larger than the
+    // wheels' own inertia; without it the tires spin up faster than the tire
+    // model can respond and the rig sits at the bottom of every grade lighting
+    // up its drives.
+    const driven = this.tractor.wheels.filter((w) => w.driven);
+    const ratio = this.powertrain.totalRatio;
+    const reflected = this.powertrain.neutral || this.powertrain.clutch < 0.05
+      ? 0
+      : (this.powertrain.engineInertia * ratio * ratio * this.powertrain.clutch) /
+        Math.max(1, driven.length);
+    for (const w of driven) w.drivelineInertia = reflected;
+
     // --- Aerodynamics -------------------------------------------------------
     for (const unit of this.units) unit.applyAerodynamics(this.wind);
 
@@ -370,11 +394,27 @@ export class Rig {
     // wound up and the inside wheels start to unload, the index climbs even if
     // the instantaneous acceleration eases off.
     const rollFraction = Math.abs(t.rollAngle) / 0.14; // ~8 degrees is committed
-    const lifted = t.wheels.filter((w) => !w.grounded && !w.lifted).length / t.wheels.length;
+
+    // Wheels off the ground only mean a rollover if they are off on ONE side.
+    // Cresting a rise lifts both sides at once, and that is airborne, not
+    // tipping over.
+    let leftUp = 0;
+    let rightUp = 0;
+    let leftTotal = 0;
+    let rightTotal = 0;
+    for (const w of t.wheels) {
+      if (w.lifted) continue;
+      const left = w.position.x < 0;
+      if (left) { leftTotal++; if (!w.grounded) leftUp++; }
+      else { rightTotal++; if (!w.grounded) rightUp++; }
+    }
+    const leftFrac = leftTotal ? leftUp / leftTotal : 0;
+    const rightFrac = rightTotal ? rightUp / rightTotal : 0;
+    const oneSideLifted = Math.abs(leftFrac - rightFrac);
 
     this.rolloverWarning = Math.min(
       1.5,
-      Math.max(latG / ssf, rollFraction, lifted * 2)
+      Math.max(latG / ssf, rollFraction, oneSideLifted * 1.6)
     );
     this.jackknifeWarning = Math.min(1.5, Math.abs(this.yawA.angle) / this.yawA.limit);
   }
@@ -427,13 +467,26 @@ export class Rig {
     };
   }
 
-  /** Places the whole combination at a position and heading, at rest. */
-  placeAt(position, heading) {
+  /**
+   * Places the whole combination at a position and heading, at rest.
+   *
+   * Each unit is seated relative to the road surface directly beneath it rather
+   * than to a flat y=0 plane. Without that, the camber alone leaves the wheels
+   * buried several centimetres into the pavement, and on a rig this heavy a
+   * few centimetres of extra spring compression is tens of tonnes of phantom
+   * axle load.
+   */
+  placeAt(position, heading, ground = null) {
     const offsets = [0, -4.30, -10.90];
+    const rideHeights = [1.182, 0.992, this.trailer.comHeight];
     const dir = new Vector3(Math.sin(heading), 0, Math.cos(heading));
+
     this.units.forEach((unit, i) => {
       unit.body.position.copy(position).addScaledVector(dir, offsets[i]);
-      unit.body.position.y += [1.182, 0.992, 1.874][i];
+      const surfaceY = ground
+        ? ground.sample(unit.body.position.x, unit.body.position.z).height
+        : 0;
+      unit.body.position.y = surfaceY + rideHeights[i];
       unit.body.quaternion.setFromAxisAngle(new Vector3(0, 1, 0), heading);
       unit.body.velocity.set(0, 0, 0);
       unit.body.angularVelocity.set(0, 0, 0);

@@ -239,12 +239,32 @@ export class Route {
     return out;
   }
 
-  /** Road surface elevation at a point, with camber shed off the crown. */
+  /**
+   * Road surface elevation at a point, with camber shed off the crown.
+   *
+   * The elevation is interpolated between samples rather than snapped to the
+   * nearest one. Snapping turns a smooth grade into a staircase of centimetre
+   * steps, and with two dozen wheels spread over 87 feet the rig ends up riding
+   * several different steps at once -- which reads as phantom axle load and a
+   * permanent shudder through the suspension.
+   */
   elevationAt(x, z, projection = null) {
     const proj = projection ?? this.project(x, z);
-    const sample = this.samples[proj.index];
     const camber = -Math.min(Math.abs(proj.lateral), this.roadHalfWidth) * 0.02;
-    return sample.position.y + camber;
+    return this.elevationAtS(proj.s) + camber;
+  }
+
+  /** Interpolated centreline elevation at arc length `s`. */
+  elevationAtS(s) {
+    const n = this.samples.length;
+    const spacing = this.length / (n - 1);
+    const f = Math.max(0, Math.min(n - 1, s / spacing));
+    const i0 = Math.min(n - 1, Math.floor(f));
+    const i1 = Math.min(n - 1, i0 + 1);
+    const t = f - i0;
+    const y0 = this.samples[i0].position.y;
+    const y1 = this.samples[i1].position.y;
+    return y0 + (y1 - y0) * t;
   }
 
   /** The next junction ahead of arc length `s`, or null. */

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f2c200'/%3E%3Ctext y='23' x='16' text-anchor='middle' font-size='20'%3E%F0%9F%9A%9B%3C/text%3E%3C/svg%3E" />
+  <title>Heavy Haul — Oversize Load Convoy</title>
+  <meta name="description" content="A heavy haul simulator: 212,000 lb superload, multi-axle lowboy, police and pilot car escorts." />
+</head>
+<body>
+  <canvas id="view" tabindex="0"></canvas>
+  <div id="hud-root"></div>
+
+  <div id="loading"><div class="spinner"></div></div>
+
+  <div id="start-screen">
+    <div class="start-card">
+      <div class="sub">Bennett Heavy Haul &mdash; Permit 24-0881-OS</div>
+      <h1>400 MVA transformer to Cloverdale Substation</h1>
+      <p>
+        212,000 lb gross on a four-axle lowboy behind a jeep dolly. Twelve feet wide,
+        which is wider than the lane you are driving in, so oncoming traffic has to
+        get off the road. Two police units run ahead and leapfrog the junctions;
+        a lead pilot car carries the height pole, and a chase car keeps everyone
+        off your tail.
+      </p>
+      <p>
+        Seven and a half miles. There is a nine percent grade off the ridge &mdash;
+        gear down and use the compression brake, because your service brakes will
+        fade long before the bottom. The switchback needs the trailer's rear steer.
+        Watch the rollover meter more than the speedometer.
+      </p>
+
+      <div class="controls">
+        <div><span>Steer</span><kbd>A</kbd> <kbd>D</kbd></div>
+        <div><span>Throttle / brake</span><kbd>W</kbd> <kbd>S</kbd></div>
+        <div><span>Trailer rear steer</span><kbd>Q</kbd> <kbd>E</kbd></div>
+        <div><span>Parking brake</span><kbd>Space</kbd></div>
+        <div><span>Shift up / down</span><kbd>Shift</kbd> <kbd>Ctrl</kbd></div>
+        <div><span>Auto shift</span><kbd>T</kbd></div>
+        <div><span>Compression brake</span><kbd>B</kbd></div>
+        <div><span>Diff lock</span><kbd>F</kbd></div>
+        <div><span>Camera</span><kbd>C</kbd></div>
+        <div><span>Look back</span><kbd>X</kbd></div>
+        <div><span>Lift axle</span><kbd>L</kbd></div>
+        <div><span>Reset</span><kbd>P</kbd></div>
+      </div>
+
+      <button id="start-button">Release the brakes</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

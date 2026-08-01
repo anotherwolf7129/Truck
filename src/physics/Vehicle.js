@@ -72,8 +72,21 @@ export class Wheel {
     this.contactPoint = new Vector3();
     this.contactNormal = new Vector3(0, 1, 0);
     this.inertia = dual ? 32 : 18; // kg m^2, wheel + drum
+
+    // Rotational inertia of the engine and gearbox seen at this wheel, set by
+    // the powertrain each step. Through a deep gear the engine's own inertia is
+    // multiplied by the square of the ratio, so it utterly dominates the
+    // wheel's -- which is exactly why a loaded truck in a crawler gear feeds
+    // torque in smoothly instead of instantly spinning the tires.
+    this.drivelineInertia = 0;
+
     this.longForce = 0;
     this.latForce = 0;
+  }
+
+  /** Total rotational inertia resisting a change in this wheel's speed. */
+  get effectiveInertia() {
+    return this.inertia + this.drivelineInertia;
   }
 
   /** Effective vertical stiffness, doubled for dual (tandem) tire positions. */
@@ -234,8 +247,9 @@ export class VehicleUnit {
         w.saturation = 0;
         // Freewheeling wheel still responds to drive and brake torque.
         const brakeT = w.brake.torque() * w.brakeShare;
-        let spin = w.spin + (perWheelDrive * (w.driven ? 1 : 0) / w.inertia) * dt;
-        const decel = (brakeT / w.inertia) * dt;
+        const I = w.effectiveInertia;
+        let spin = w.spin + (perWheelDrive * (w.driven ? 1 : 0) / I) * dt;
+        const decel = (brakeT / I) * dt;
         spin = Math.abs(spin) <= decel ? 0 : spin - Math.sign(spin) * decel;
         w.spin = spin;
         w.spinAngle += w.spin * dt;
@@ -293,15 +307,16 @@ export class VehicleUnit {
       // Modelling it as a force at the patch would feed straight back into the
       // wheel's own spin equation and cancel itself out.
       const rrTorque = w.tire.rollingResistance * w.load * w.radius;
+      const I = w.effectiveInertia;
 
-      let spin = w.spin + ((drive + reaction) / w.inertia) * dt;
-      const rrDecel = (rrTorque / w.inertia) * dt;
+      let spin = w.spin + ((drive + reaction) / I) * dt;
+      const rrDecel = (rrTorque / I) * dt;
       if (Math.abs(spin) <= rrDecel) spin = 0;
       else spin -= Math.sign(spin) * rrDecel;
 
       // Brake torque opposes rotation but must not spin the wheel backwards
       // within a step, which would chatter. Clamping to zero is the standard fix.
-      const decel = (brakeT / w.inertia) * dt;
+      const decel = (brakeT / I) * dt;
       if (Math.abs(spin) <= decel) {
         spin = 0;
         // With the wheel locked the tire is sliding; heat goes into the drum.
@@ -376,13 +391,20 @@ export class VehicleUnit {
       // (outer) wheel further and unloads the inner one -- which is exactly why
       // a stiffer bar costs that axle grip.
       const travelDiff = (a.restLength - a.lastLength) - (b.restLength - b.lastLength);
-      const transfer = travelDiff * this.antiRollStiffness * 0.5;
+      let transfer = travelDiff * this.antiRollStiffness * 0.5;
+
+      // A bar moves load across the axle; it cannot create any. Clamping the
+      // transfer to what the unloaded side actually has keeps the total
+      // vertical force equal to the weight on that axle -- without this, a
+      // clamp at zero on one side quietly adds load to the vehicle every step,
+      // and the rig ends up supporting more than it weighs.
+      transfer = Math.max(-a.load, Math.min(b.load, transfer));
 
       // Only the loads are adjusted here. The tire pass applies each wheel's
       // load as a force; applying the transfer separately as well would count
       // it twice and make the vehicle roll unstably.
-      a.load = Math.max(0, a.load + transfer);
-      b.load = Math.max(0, b.load - transfer);
+      a.load += transfer;
+      b.load -= transfer;
     }
   }
 
