@@ -34,6 +34,8 @@ export class Input {
       autoShift: ['KeyT'],
       resetRig: ['KeyP'],
       axleLift: ['KeyL'],
+      pause: ['Escape'],
+      mute: ['KeyM'],
     };
 
     target.addEventListener('keydown', (e) => {
@@ -45,7 +47,12 @@ export class Input {
       if (this.isBound(e.code)) e.preventDefault();
     });
     target.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    target.addEventListener('blur', () => this.keys.clear());
+    // Losing focus mid-press means the keyup never arrives, so drop both the
+    // held set and any taps that were never consumed.
+    target.addEventListener('blur', () => {
+      this.keys.clear();
+      this.pressed.clear();
+    });
   }
 
   isBound(code) {

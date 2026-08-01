@@ -56,6 +56,9 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
     maxSpin: 0,
     queuedFrames: 0,
     nonFinite: 0,
+    mainlineHeldFrames: 0,
+    heldAfterParking: 0,
+    yieldingFrames: 0,
   };
 
   const overlapsLoad = (at, halfLen, lateral, halfWidth) =>
@@ -84,6 +87,17 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
 
     const rearPilot = convoy.vehicles.find((v) => v.role === Role.REAR_PILOT);
 
+    // A unit sweeping across the road owns the whole carriageway for those few
+    // seconds; once it is parked on the mouth of the side road the highway is
+    // supposed to reopen.
+    for (const b of convoy.blockades) {
+      if (!b.holdsMainline) continue;
+      report.mainlineHeldFrames++;
+      const unit = b.assignedTo;
+      const across = b.side * (route.roadHalfWidth + 1.5);
+      if (unit && Math.abs(unit.lateral - across) <= 0.6) report.heldAfterParking++;
+    }
+
     for (const unit of convoy.vehicles) {
       if (overlapsLoad(unit.s, unit.length * 0.5, unit.lateral, unit.width * 0.5)) {
         report.escortInsideLoad++;
@@ -103,6 +117,7 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
       // Nothing in the convoy's own direction gets past the escort behind it.
       if (v.direction > 0 && v.s > rearPilot.s + 2) report.passedTheRearEscort++;
       if (v.state === 'queued') report.queuedFrames++;
+      if (v.state === 'yielding') report.yieldingFrames++;
 
       const road = v.pose.roadHeading(v.s);
       report.maxYaw = Math.max(report.maxYaw, Math.abs(v.heading - road));
@@ -147,6 +162,38 @@ test('vehicles steer into their lane changes rather than sliding sideways', () =
   assert.ok(moving.maxYaw < 0.9, `yaw angle is unphysical (${moving.maxYaw.toFixed(2)} rad)`);
   assert.ok(moving.maxSteer > 0.02, 'front wheels never turned');
   assert.ok(moving.maxSpin > 100, 'wheels never rolled');
+});
+
+test('a unit crossing the road holds the mainline, and lets it go once parked', () => {
+  console.log(
+    `  mainline held for ${moving.mainlineHeldFrames} vehicle-frames, ` +
+    `${moving.yieldingFrames} frames of traffic yielding to it`
+  );
+  assert.ok(moving.mainlineHeldFrames > 0,
+    'no unit ever held the highway while crossing it -- holdsMainline is dead again');
+  assert.strictEqual(moving.heldAfterParking, 0,
+    'the highway stayed shut after the unit had already parked on the side road');
+  assert.ok(moving.yieldingFrames > 0,
+    'traffic never actually yielded to a crossing unit');
+});
+
+test('the radio keeps reporting once its buffer is full', () => {
+  // The HUD watches the radio for new traffic. The buffer stops growing at its
+  // limit, so anything watching its length goes deaf partway through the move --
+  // which is well inside a single run.
+  const convoy = new ConvoyManager(new Route(), null);
+  const radio = convoy.radio;
+  const heard = [];
+  radio.listeners.push((m) => heard.push(m.text));
+
+  const count = radio.limit + 25;
+  for (let i = 0; i < count; i++) radio.say('Lead', `call ${i}`, { time: i });
+
+  console.log(`  ${count} calls: buffer holds ${radio.messages.length}, total counted ${radio.total}`);
+  assert.strictEqual(radio.messages.length, radio.limit, 'the buffer should stay bounded');
+  assert.strictEqual(radio.total, count, 'every call must be counted, not just the buffered ones');
+  assert.strictEqual(heard.length, count, 'every call must reach the listeners');
+  assert.strictEqual(radio.recent(1)[0].text, `call ${count - 1}`, 'the newest call must be readable');
 });
 
 test('a load that stops still is not run into from behind', () => {

@@ -336,11 +336,7 @@ export class Rig {
     // --- Engine ------------------------------------------------------------
     this.powertrain.throttle = this.air.parkingBrake ? 0 : this.throttle;
     const wheelRadius = this.tractor.wheels.find((w) => w.driven).radius;
-    let wheelTorque = this.powertrain.update(dt, this.driveWheelOmega(), wheelRadius);
-
-    // A locked inter-axle differential sends torque to the axle with grip
-    // instead of splitting it evenly into the wheel that is already spinning.
-    if (this.diffLock) wheelTorque *= 1.0;
+    const wheelTorque = this.powertrain.update(dt, this.driveWheelOmega(), wheelRadius);
 
     // Reflect the engine and gearbox inertia down to the drive wheels. Through
     // a 33:1 crawler gear this is three orders of magnitude larger than the
@@ -359,7 +355,9 @@ export class Rig {
     for (const unit of this.units) unit.applyAerodynamics(this.wind);
 
     // --- Per-unit dynamics --------------------------------------------------
-    this.tractor.update(dt, ground, wheelTorque, brakeDemand, this.air.psi);
+    // A locked inter-axle differential sends torque to the wheels that can use
+    // it instead of splitting it evenly into whichever one is already spinning.
+    this.tractor.update(dt, ground, wheelTorque, brakeDemand, this.air.psi, this.diffLock);
     this.jeep.update(dt, ground, 0, brakeDemand, this.air.psi);
     this.trailer.update(dt, ground, 0, brakeDemand, this.air.psi);
 

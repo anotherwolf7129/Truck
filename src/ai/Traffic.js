@@ -59,6 +59,11 @@ export function convoyObstacles(world) {
 // the caller has not said where its units actually are.
 const CONVOY_TAIL = 450;
 
+// How far short of a junction traffic stops while a unit is crossing to it.
+// Far enough back that the stopped car is not sitting in the space the unit is
+// trying to move through.
+const MAINLINE_STOP_BACK = 35;
+
 /**
  * The point behind the load where the escort operation ends.
  *
@@ -157,14 +162,21 @@ export class TrafficVehicle {
     }
 
     // --- Obey the escorts ---------------------------------------------------
-    // A police unit holding a junction stops everything on the approach.
+    // A police unit crossing the carriageway to reach a junction stops
+    // everything on the approach until it is parked.
+    //
+    // The stop line is set well back rather than at the junction itself: the
+    // unit is manoeuvring across the road right there, and a car halted on top
+    // of it reads to `laneClear` as a reason never to finish crossing -- which
+    // is a standoff neither of them can break.
+    let yielding = false;
     for (const b of world.blockades) {
-      if (!b.active) continue;
+      if (!b.active || !b.holdsMainline) continue;
       const ahead = (b.s - this.s) * this.direction;
-      if (ahead > 0 && ahead < 220 && b.holdsMainline) {
-        gap = Math.min(gap, ahead - 8);
+      if (ahead > 0 && ahead < 220) {
+        gap = Math.min(gap, ahead - MAINLINE_STOP_BACK);
         desired = 0;
-        this.state = 'yielding';
+        yielding = true;
       }
     }
 
@@ -234,13 +246,20 @@ export class TrafficVehicle {
         desired = Math.min(desired, Math.max(0, convoy.speed ?? 0));
         this.targetOffset = this.laneOffset;
         this.hazards = false;
-        if (this.state !== 'yielding') this.state = 'queued';
+        this.state = 'queued';
       } else {
         this.targetOffset = this.laneOffset;
         this.hazards = false;
-        if (this.state !== 'driving') this.state = 'driving';
+        this.state = 'driving';
       }
     }
+
+    // Held for a unit crossing the road. Applied here, after the convoy states
+    // above have had their say, and recomputed every frame rather than latched
+    // into `state` -- so a car starts moving again the moment the unit is parked
+    // and the highway reopens. Being pulled over for the load itself is the more
+    // urgent of the two and already has the vehicle stopped, so it wins.
+    if (yielding && this.state !== 'pulled-over') this.state = 'yielding';
 
     // A unit coming up this lane the wrong way, lights going, is not something
     // to stop dead in front of and wait: get right over and let it through.

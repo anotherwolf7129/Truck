@@ -12,6 +12,9 @@ import { ConvoyManager, Role } from './ai/Escort.js';
 import { TrafficManager } from './ai/Traffic.js';
 import { Input } from './core/Input.js';
 import { HUD } from './ui/HUD.js';
+import { Debrief } from './ui/Debrief.js';
+import { AudioEngine } from './audio/Audio.js';
+import { Scorecard } from './mission/Scorecard.js';
 
 const _v = new Vector3();
 const _q = new Quaternion();
@@ -62,6 +65,11 @@ export class Game {
     this.buildEscortVisuals();
     this.trafficVisuals = new Map();
     this.blockadeVisuals = new Map();
+    // Free list of retired vehicle meshes, keyed by kind. Traffic recycles
+    // continuously for the whole move, and every one of these meshes owns its
+    // own geometry and paint -- so they are handed back and reused rather than
+    // dropped on the floor for the GPU to accumulate.
+    this.vehiclePool = new Map();
 
     // --- State ---------------------------------------------------------------
     this.convoyS = 0;
@@ -83,7 +91,24 @@ export class Game {
     this._camInit = false;
 
     this.hud = new HUD(hudRoot);
-    this.hud.setPermit(Object.assign(this.rig, { loadHeight: this.loadHeight }), this.route);
+    this.hud.setPermit(this.rig, this.route);
+    this.debrief = new Debrief(hudRoot);
+    this.debrief.onRestart = () => this.reset();
+
+    // Silent until attachAudio() is called from a user gesture -- the browser
+    // will not give us a running context before then.
+    this.audio = new AudioEngine(null);
+    // Every radio call gets a squelch click ahead of it. `Radio` already
+    // supports listeners; this is the first thing to use one.
+    this.convoy.radio.listeners.push((msg) => this.audio.chirp(msg.priority));
+
+    // Start the world at the same time the dash is showing.
+    this.render.setTimeOfDay(this.clockHour);
+
+    // A backgrounded tab should not keep driving the load.
+    globalThis.document?.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.setPaused(true);
+    });
 
     this.reset();
   }
@@ -153,6 +178,13 @@ export class Game {
     this.convoy.reset(startS);
     this.finished = false;
     this._camInit = false;
+    this.elapsed = 0;
+    this.clockHour = 9.25;
+
+    // A fresh sheet. The old one has already been shown by the time we get here.
+    this.scorecard = new Scorecard(this.route, this.loadHeight);
+    this.debrief.hide();
+    this.setPaused(false);
 
     this.convoy.radio.say('Dispatch',
       `Permit is live. ${Math.round(this.rig.grossWeightLb).toLocaleString()} lb gross, ` +
@@ -199,6 +231,8 @@ export class Game {
     this.convoySpeed = speedMph / 2.23694;
     this.convoy.reset(s);
     this._camInit = false;
+    // The road behind the jump was never driven, so it is not scored.
+    this.scorecard.skipTo(s);
 
     // Let the suspension find the road before handing control back, otherwise
     // the rig arrives airborne and the first second of every jump is a landing.
@@ -255,6 +289,7 @@ export class Game {
       }
     }
     if (input.tapped('resetRig')) this.reset();
+    if (input.tapped('mute')) this.audio.toggleMute();
   }
 
   /** Runs the physics at a fixed rate regardless of frame rate. */
@@ -273,7 +308,7 @@ export class Game {
     if (steps === MAX_STEPS) this.accumulator = 0;
   }
 
-  updateRouteState() {
+  updateRouteState(dt = 0) {
     const p = this.rig.tractor.body.position;
     const proj = this.route.project(p.x, p.z);
     this.convoyS = proj.s;
@@ -298,12 +333,32 @@ export class Game {
       }
     }
 
-    if (!this.finished && this.convoyS >= this.route.destination.s) {
-      this.finished = true;
+    if (this.finished) return;
+
+    // Scored before the end checks below, so the frame that ends the move is
+    // itself part of the record rather than being thrown away.
+    this.scorecard.observe(dt, this.rig, this.convoy, this.convoyS, proj.lateral);
+
+    if (this.convoyS >= this.route.destination.s) {
       this.convoy.radio.say('Dispatch',
         `That's the yard. Load delivered, ${(this.elapsed / 60).toFixed(0)} minutes on the road. Good move.`,
         { priority: 'critical', time: this.convoy.time });
+      this.endMove('delivered');
+    } else if (this.rig.telemetry.rollover >= 1.4) {
+      // Same threshold the mission test treats as over: past this the load is
+      // on its side and there is no driving out of it.
+      this.convoy.radio.say('Lead',
+        'It\'s over. Load is on its side — everybody stop, shut the road down.',
+        { priority: 'critical', time: this.convoy.time });
+      this.endMove('rolled');
     }
+  }
+
+  /** Closes out the move and raises the debrief. */
+  endMove(outcome) {
+    this.finished = true;
+    this.scorecard.finish(outcome);
+    this.debrief.show(this.scorecard, this.route);
   }
 
   // ---------------------------------------------------------------------------
@@ -383,25 +438,46 @@ export class Game {
     }
   }
 
+  /**
+   * Takes a vehicle mesh of the given kind from the pool, or builds one.
+   *
+   * Pooled cars keep whatever paint they were built with, which is fine -- the
+   * pool fills up with the same spread of colours the seed would have produced.
+   */
+  acquireVehicle(kind, seed) {
+    const free = this.vehiclePool.get(kind);
+    const mesh = free?.pop() ?? createTrafficVehicle(kind, seed);
+    mesh.visible = true;
+    if (!mesh.parent) this.render.scene.add(mesh);
+    return mesh;
+  }
+
+  /** Hands a mesh back for reuse rather than orphaning its geometry. */
+  releaseVehicle(kind, mesh) {
+    mesh.visible = false;
+    let free = this.vehiclePool.get(kind);
+    if (!free) this.vehiclePool.set(kind, (free = []));
+    free.push(mesh);
+  }
+
   syncTraffic() {
     const seen = new Set();
     for (const v of this.traffic.vehicles) {
       seen.add(v.id);
-      let mesh = this.trafficVisuals.get(v.id);
-      if (!mesh) {
-        mesh = createTrafficVehicle(v.kind, (v.id * 0.37) % 1);
-        this.render.scene.add(mesh);
-        this.trafficVisuals.set(v.id, mesh);
+      let entry = this.trafficVisuals.get(v.id);
+      if (!entry) {
+        entry = { kind: v.kind, mesh: this.acquireVehicle(v.kind, (v.id * 0.37) % 1) };
+        this.trafficVisuals.set(v.id, entry);
       }
-      this.placeRoadVehicle(mesh, v.pose, v.heading, {
+      this.placeRoadVehicle(entry.mesh, v.pose, v.heading, {
         brake: v.brakeLight || v.speed < 0.2,
         hazard: v.hazards,
       });
     }
     // Retire meshes whose vehicles have been recycled.
-    for (const [id, mesh] of this.trafficVisuals) {
+    for (const [id, entry] of this.trafficVisuals) {
       if (!seen.has(id)) {
-        this.render.scene.remove(mesh);
+        this.releaseVehicle(entry.kind, entry.mesh);
         this.trafficVisuals.delete(id);
       }
     }
@@ -409,21 +485,29 @@ export class Game {
 
   /** Cars waiting at the blocked side roads. */
   syncBlockades() {
+    const seen = new Set();
     for (const b of this.convoy.blockades) {
       for (let i = 0; i < b.queue.length; i++) {
-        const key = `${b.name}:${i}`;
-        let mesh = this.blockadeVisuals.get(key);
-        if (!mesh) {
-          mesh = createTrafficVehicle(b.queue[i].kind, (i * 0.41 + b.queueSeed) % 1);
-          this.render.scene.add(mesh);
-          this.blockadeVisuals.set(key, mesh);
-        }
         const c = b.queue[i];
+        const key = `${b.name}:${i}`;
+        seen.add(key);
+        let entry = this.blockadeVisuals.get(key);
+        if (!entry) {
+          entry = { kind: c.kind, mesh: this.acquireVehicle(c.kind, (i * 0.41 + b.queueSeed) % 1) };
+          this.blockadeVisuals.set(key, entry);
+        }
         const h = this.ground.heightAt(c.position.x, c.position.z);
-        mesh.position.set(c.position.x, h, c.position.z);
-        mesh.rotation.y = c.heading;
+        entry.mesh.position.set(c.position.x, h, c.position.z);
+        entry.mesh.rotation.y = c.heading;
         // Only render the queue while the convoy is close enough to see it.
-        mesh.visible = Math.abs(b.s - this.convoyS) < 500;
+        entry.mesh.visible = Math.abs(b.s - this.convoyS) < 500;
+      }
+    }
+    // A reset empties the queues; their cars go back in the pool with the rest.
+    for (const [key, entry] of this.blockadeVisuals) {
+      if (!seen.has(key)) {
+        this.releaseVehicle(entry.kind, entry.mesh);
+        this.blockadeVisuals.delete(key);
       }
     }
   }
@@ -531,14 +615,40 @@ export class Game {
   // Frame
   // ---------------------------------------------------------------------------
 
+  /**
+   * Switches the sound on. Must be called from a user gesture.
+   *
+   * Kept out of the constructor so that constructing a Game never depends on an
+   * AudioContext being available -- the tools and any headless use still work.
+   */
+  attachAudio() {
+    this.audio = AudioEngine.create();
+    this.audio.resume();
+    return this.audio;
+  }
+
+  /** Pauses or resumes, and shows the overlay. */
+  setPaused(paused) {
+    this.paused = paused;
+    this.hud.setPaused(paused);
+    this.audio.setSuspended(paused);
+  }
+
   update(dt) {
     dt = Math.min(dt, 0.1);
     this.elapsed += dt;
     this.clockHour += dt / 3600;
 
+    // The sun tracks the dash clock. `setTimeOfDay` rebuilds the reflection
+    // probe, which is far too expensive to do every frame, so it only runs once
+    // the clock has actually moved -- about once a minute of real time.
+    if (Math.abs(this.clockHour - this.render.hour) > 0.02) {
+      this.render.setTimeOfDay(this.clockHour);
+    }
+
     this.handleInput(dt);
     this.stepPhysics(dt);
-    this.updateRouteState();
+    this.updateRouteState(dt);
 
     const load = {
       lateral: this.convoyLateral,
@@ -562,12 +672,8 @@ export class Game {
     this.updateCamera(dt);
 
     this.render.update(this.rig.tractor.body.position);
+    this.audio.update(dt, this.rig);
     this.hud.update(this);
-    this.input.endFrame();
-  }
-
-  render_() {
-    this.render.render();
   }
 
   start() {
@@ -575,10 +681,15 @@ export class Game {
     const loop = (now) => {
       const dt = (now - last) / 1000;
       last = now;
-      if (!this.paused) {
-        this.update(dt);
-        this.render.render();
-      }
+
+      // The pause toggle and the frame's input bookkeeping both live out here
+      // rather than in update(): a paused game does not run update(), so a
+      // toggle checked in there could never be seen again once it had fired.
+      if (this.input.tapped('pause')) this.setPaused(!this.paused);
+      if (!this.paused) this.update(dt);
+      this.render.render();
+      this.input.endFrame();
+
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);

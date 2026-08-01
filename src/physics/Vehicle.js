@@ -73,6 +73,14 @@ export class Wheel {
     this.contactNormal = new Vector3(0, 1, 0);
     this.inertia = dual ? 32 : 18; // kg m^2, wheel + drum
 
+    // Friction coefficient of whatever this wheel is standing on, resolved once
+    // per step in the suspension pass so both the tire model and the
+    // differential split can read it.
+    this.surfaceGrip = 1;
+    // This wheel's share of the engine's torque, Nm at the wheel. Set by the
+    // unit's differential split each step.
+    this.driveTorque = 0;
+
     // Rotational inertia of the engine and gearbox seen at this wheel, set by
     // the powertrain each step. Through a deep gear the engine's own inertia is
     // multiplied by the square of the ratio, so it utterly dominates the
@@ -170,13 +178,12 @@ export class VehicleUnit {
    * @param driveTorque total torque to split across driven wheels, Nm at wheel
    * @param brakeDemand 0..1
    * @param airPsi    supply pressure for the brake groups
+   * @param locked    true if the differentials are locked, so torque follows the
+   *                  wheels that can use it instead of being split evenly
    */
-  update(dt, ground, driveTorque, brakeDemand, airPsi) {
+  update(dt, ground, driveTorque, brakeDemand, airPsi, locked = false) {
     const body = this.body;
     body.localToWorldDir(LOCAL_UP, _up).normalize();
-
-    const drivenWheels = this.wheels.filter((w) => w.driven && !w.lifted);
-    const perWheelDrive = drivenWheels.length ? driveTorque / drivenWheels.length : 0;
 
     // --- Suspension pass -----------------------------------------------------
     for (const w of this.wheels) {
@@ -184,6 +191,8 @@ export class VehicleUnit {
         w.grounded = false;
         w.load = 0;
         w.compression = 0;
+        w.surfaceGrip = 0;
+        w.driveTorque = 0;
         continue;
       }
 
@@ -203,6 +212,7 @@ export class VehicleUnit {
         w.grounded = false;
         w.load = 0;
         w.compression = 0;
+        w.surfaceGrip = 0;
         w.lastLength = w.restLength + w.maxTravel;
         w.contactPoint.copy(_mount).addScaledVector(_up, -(w.lastLength + w.radius));
         w.contactNormal.copy(_n);
@@ -233,9 +243,14 @@ export class VehicleUnit {
       w.load = springForce;
       w.contactPoint.copy(_mount).addScaledVector(_up, -(length + w.radius));
       w.contactNormal.copy(_n);
+      // Grip is resolved here rather than in the tire pass so the differential
+      // split below can see what each wheel is standing on.
+      w.surfaceGrip = this.surfaceGripOverride
+        ?? ground.sample(w.contactPoint.x, w.contactPoint.z).grip;
     }
 
     this.applyAntiRoll();
+    this.splitDriveTorque(driveTorque, locked);
 
     // --- Tire pass -----------------------------------------------------------
     for (const w of this.wheels) {
@@ -248,7 +263,7 @@ export class VehicleUnit {
         // Freewheeling wheel still responds to drive and brake torque.
         const brakeT = w.brake.torque() * w.brakeShare;
         const I = w.effectiveInertia;
-        let spin = w.spin + (perWheelDrive * (w.driven ? 1 : 0) / I) * dt;
+        let spin = w.spin + ((w.driven ? w.driveTorque : 0) / I) * dt;
         const decel = (brakeT / I) * dt;
         spin = Math.abs(spin) <= decel ? 0 : spin - Math.sign(spin) * decel;
         w.spin = spin;
@@ -276,7 +291,7 @@ export class VehicleUnit {
       w.slipRatio = kappa;
       w.slipAngle = alpha;
 
-      const grip = this.surfaceGripOverride ?? ground.sample(w.contactPoint.x, w.contactPoint.z).grip;
+      const grip = w.surfaceGrip;
 
       // A dual is two tires sharing the position's load. Each carries half, so
       // each sits lower on the load-sensitivity curve and keeps more of its
@@ -300,7 +315,7 @@ export class VehicleUnit {
       // --- Wheel spin dynamics ---
       const brakeT = w.brake.torque() * w.brakeShare;
       const reaction = -Fx * w.radius;
-      const drive = w.driven ? perWheelDrive : 0;
+      const drive = w.driven ? w.driveTorque : 0;
 
       // Rolling resistance is a moment, not a contact force: it comes from the
       // pressure in the contact patch sitting ahead of the axle centreline.
@@ -330,6 +345,46 @@ export class VehicleUnit {
     }
 
     this.resolveChassisContacts(dt, ground);
+  }
+
+  /**
+   * Shares the engine's torque out across the driven wheels.
+   *
+   * An open differential is a torque splitter: both sides get the same torque,
+   * so the total the axle can deliver is set by whichever wheel has the *least*
+   * grip. Drop one drive tire onto a wet shoulder and the whole axle is limited
+   * to what that tire can hold, which is the classic way to end up stationary
+   * with one wheel spinning.
+   *
+   * Locking the differentials ties the shafts together, so torque is free to go
+   * wherever it can be used. Modelling that as a split weighted by each wheel's
+   * available traction -- load times surface grip -- reproduces the useful part:
+   * the wheel with grip does the work instead of waiting for the one without.
+   */
+  splitDriveTorque(driveTorque, locked) {
+    const driven = this.wheels.filter((w) => w.driven && !w.lifted);
+    if (!driven.length) return;
+
+    if (!locked) {
+      const even = driveTorque / driven.length;
+      for (const w of driven) w.driveTorque = even;
+      return;
+    }
+
+    let total = 0;
+    for (const w of driven) total += w.load * w.surfaceGrip;
+
+    if (total <= 1e-6) {
+      // Every drive wheel is in the air. Nothing to bias toward, so fall back to
+      // an even split rather than dividing by zero.
+      const even = driveTorque / driven.length;
+      for (const w of driven) w.driveTorque = even;
+      return;
+    }
+
+    for (const w of driven) {
+      w.driveTorque = driveTorque * ((w.load * w.surfaceGrip) / total);
+    }
   }
 
   /**

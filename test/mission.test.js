@@ -6,6 +6,7 @@ import { Route } from '../src/world/Route.js';
 import { Ground } from '../src/world/Ground.js';
 import { ConvoyManager } from '../src/ai/Escort.js';
 import { TrafficManager } from '../src/ai/Traffic.js';
+import { Scorecard } from '../src/mission/Scorecard.js';
 
 /**
  * End-to-end: drive the whole permitted route with a simple autopilot and check
@@ -46,20 +47,9 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
   const dt = 1 / 120;
   const steps = Math.floor((maxMinutes * 60) / dt);
 
-  const report = {
-    completed: false,
-    minutes: 0,
-    peakRollover: 0,
-    peakJackknife: 0,
-    peakBrakeC: 0,
-    minPsi: 999,
-    maxOffRoute: 0,
-    junctionsBlocked: 0,
-    junctionsMissed: [],
-    lowestClearanceMargin: Infinity,
-    distanceMi: 0,
-  };
-  const seenJunctions = new Set();
+  // The same accumulator the game scores the player's run with, so the numbers
+  // asserted here are exactly the ones the debrief screen reports.
+  const card = new Scorecard(route, loadHeight);
   const proj = {};
 
   for (let i = 0; i < steps; i++) {
@@ -107,36 +97,13 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
     });
 
     // --- Observations -------------------------------------------------------
-    report.peakRollover = Math.max(report.peakRollover, rig.telemetry.rollover);
-    report.peakJackknife = Math.max(report.peakJackknife, rig.telemetry.jackknife);
-    report.peakBrakeC = Math.max(report.peakBrakeC, rig.telemetry.brakeTempC);
-    report.minPsi = Math.min(report.minPsi, rig.air.psi);
-    report.maxOffRoute = Math.max(report.maxOffRoute, Math.abs(proj.lateral));
+    card.observe(dt, rig, convoy, s, proj.lateral);
 
-    for (const b of convoy.blockades) {
-      if (!seenJunctions.has(b.name) && s > b.s - 5) {
-        seenJunctions.add(b.name);
-        if (b.active) report.junctionsBlocked++;
-        else report.junctionsMissed.push(b.name);
-      }
-    }
-    for (const bridge of route.bridges) {
-      if (Math.abs(bridge.s - s) < 12) {
-        report.lowestClearanceMargin = Math.min(
-          report.lowestClearanceMargin,
-          bridge.clearance - loadHeight
-        );
-      }
-    }
-
-    report.minutes = (i * dt) / 60;
-    report.distanceMi = s / 1609.34;
-
-    if (s >= route.destination.s) { report.completed = true; break; }
-    if (rig.telemetry.rollover >= 1.4) break;   // on its side, move over
+    if (s >= route.destination.s) { card.finish('delivered'); break; }
+    if (rig.telemetry.rollover >= 1.4) { card.finish('rolled'); break; }
   }
 
-  return report;
+  return card.report;
 }
 
 let mission;
