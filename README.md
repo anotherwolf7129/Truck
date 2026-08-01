@@ -100,19 +100,30 @@ Four escorts, and the interesting behaviour is the **leapfrog**:
 
 - **Unit 12 / Unit 8** (police) — run ahead, park across the mouth of a side road
   with the lights going, hold it until the whole 87 ft combination is clear, then
-  release and run up the shoulder past you to take the next junction nobody is
+  release and run up the closed lane past you to take the next junction nobody is
   covering. Done properly the load never stops, and it looks like every side road
   on the route happens to be closed.
 - **Lead** (pilot car) — 140 m out front carrying a height pole set just above the
   load, calling bridges, corners and grades over the radio before you can see them.
 - **Chase** (pilot car) — 95 m behind, keeping following traffic off your tail.
 
-Ambient traffic runs an Intelligent Driver Model. Oncoming vehicles take the
-shoulder and stop, because the load is wider than the lane it is travelling in and
-there is physically nowhere for them to go. Traffic behind queues at convoy speed
-rather than passing.
+Ambient traffic runs an Intelligent Driver Model, and treats the load and every
+escort as solid: it follows them, queues behind them and cannot pass through them.
+Oncoming vehicles take the shoulder and stop, because the load is wider than the
+lane it is travelling in and there is physically nowhere for them to go — and they
+stay off until the whole formation is past, not just the load, because that lane
+is what the police units leapfrog up. Traffic coming up behind joins the back of
+the escort formation and runs at convoy speed; nothing gets past the rear unit.
 
-The mission test asserts all ten junctions are blocked before the load arrives.
+None of these vehicles are simulated with the rig's physics — they are an arc
+length along the route and a lane offset — so their pose is reconstructed for
+rendering: they yaw into a lane change before they get there, their front wheels
+stay turned for as long as they are turning, and they pitch with the grade.
+Without that, a shoulder pull-off is a box being slid sideways across the road.
+
+The mission test asserts all ten junctions are blocked before the load arrives,
+and the convoy test asserts nothing on the road ever occupies the same space as
+the load.
 
 ## The route
 
@@ -150,11 +161,11 @@ Release the parking brake to start. Take the switchback at eight.
 src/
   physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig
   world/       Route (spline, junctions, bridges, grades), Ground (terrain + grip)
-  ai/          Traffic (IDM), Escort (blockades, leapfrog, radio)
+  ai/          Traffic (IDM), Escort (blockades, leapfrog, radio), RoadPose
   render/      Scene (sky, lighting, probe), Models, WorldMesh
   ui/          HUD, style
   core/        Input
-test/          physics.test.js, mission.test.js
+test/          physics.test.js, mission.test.js, convoy.test.js
 tools/         layout.mjs (load analysis), plus driving and browser harnesses
 ```
 

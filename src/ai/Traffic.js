@@ -1,6 +1,4 @@
-import { Vector3 } from 'three';
-
-const _p = new Vector3();
+import { RoadPose } from './RoadPose.js';
 
 /**
  * Intelligent Driver Model acceleration.
@@ -21,6 +19,59 @@ export function idm(v, desiredV, gap, closingRate, {
   );
   const interaction = Math.pow(sStar / Math.max(0.8, gap), 2);
   return maxAccel * (free - interaction);
+}
+
+/**
+ * The convoy as ambient traffic sees it: a string of solid objects on the road.
+ *
+ * Traffic that only knows about other traffic will drive straight through the
+ * load and the escorts, which is exactly what the rear police unit is there to
+ * prevent. Each entry is an occupied span of route with a lane position, so a
+ * car can both queue behind it and refuse to pass through it.
+ */
+export function convoyObstacles(world) {
+  const out = [];
+  const convoy = world.convoy;
+  if (convoy) {
+    const length = convoy.length ?? 27;
+    out.push({
+      front: convoy.s,
+      rear: convoy.s - length,
+      speed: Math.max(0, convoy.speed ?? 0),
+      lateral: convoy.lateral ?? 0,
+      halfWidth: convoy.halfWidth ?? 1.9,
+    });
+  }
+  for (const e of world.escorts ?? []) {
+    const half = (e.length ?? 4.9) * 0.5;
+    out.push({
+      front: e.s + half,
+      rear: e.s - half,
+      speed: Math.max(0, e.speed ?? 0),
+      lateral: e.lateral ?? 0,
+      halfWidth: (e.width ?? 1.95) * 0.5,
+    });
+  }
+  return out;
+}
+
+// Fallback for how far behind the load the escort formation reaches, used when
+// the caller has not said where its units actually are.
+const CONVOY_TAIL = 450;
+
+/**
+ * The point behind the load where the escort operation ends.
+ *
+ * Oncoming traffic stays off the road until everything in the convoy is past,
+ * not just the load: a unit that has released a junction runs the best part of a
+ * kilometre back up the closed lane to take the next one, and that lane has to
+ * still be closed when it does. The tail therefore comes from where the units
+ * actually are rather than from a fixed distance.
+ */
+export function convoyRear(obstacles, fallback) {
+  let rear = Infinity;
+  for (const o of obstacles) rear = Math.min(rear, o.rear);
+  return Number.isFinite(rear) ? rear - 60 : fallback;
 }
 
 let nextId = 1;
@@ -50,9 +101,7 @@ export class TrafficVehicle {
     this.targetOffset = this.laneOffset;
     this.currentOffset = this.laneOffset;
 
-    this.position = new Vector3();
-    this.heading = 0;
-    this.state = 'driving';        // driving | yielding | stopped | pulled-over
+    this.state = 'driving';        // driving | queued | yielding | stopped | pulled-over
     this.brakeLight = false;
     this.hazards = false;
     this.stoppedTimer = 0;
@@ -60,21 +109,44 @@ export class TrafficVehicle {
     this.length = kind === 'truck' ? 16 : 4.6;
     this.width = kind === 'truck' ? 2.5 : 1.85;
 
-    this.updateTransform();
+    this.pose = new RoadPose(route, {
+      direction,
+      wheelRadius: kind === 'truck' ? 0.46 : 0.34,
+      wheelbase: kind === 'truck' ? 4.2 : 2.85,
+    });
+    this.position = this.pose.position;
+    this.heading = 0;
+    this.pose.reset(this.s, this.currentOffset);
+    this.heading = this.pose.heading;
   }
 
-  updateTransform() {
-    this.route.positionAt(this.s, this.currentOffset, this.position);
-    const h = this.route.headingAt(this.s);
-    this.heading = this.direction > 0 ? h : h + Math.PI;
+  updateTransform(dt = 0) {
+    this.pose.update(dt, this.s, this.currentOffset, this.speed);
+    this.heading = this.pose.heading;
+  }
+
+  /**
+   * How far off the centreline this vehicle sits when it gets out of the way.
+   *
+   * Right to the edge of the shoulder, measured from its own outside edge -- a
+   * 2.5 m truck parked at a car's offset still has a foot of itself in the lane
+   * the escorts need to get by in.
+   */
+  shoulderOffset(side) {
+    return side * (this.route.roadHalfWidth - this.width * 0.5 - 0.2);
+  }
+
+  /** True if this vehicle and an occupied span of road share any lane space. */
+  overlapsLaterally(obstacle) {
+    return Math.abs(obstacle.lateral - this.currentOffset)
+      < obstacle.halfWidth + this.width * 0.5 + 0.35;
   }
 
   /**
    * @param leader  the vehicle ahead in this lane, or null
-   * @param world   { convoy, blockades, route }
+   * @param world   { convoy, escorts, blockades, route }
    */
   update(dt, leader, world) {
-    const route = this.route;
     let desired = this.desiredSpeed;
     let gap = Infinity;
     let closing = 0;
@@ -96,32 +168,88 @@ export class TrafficVehicle {
       }
     }
 
+    // --- Don't drive through the convoy -------------------------------------
+    // The load and its escorts are solid. Anything in this lane ahead of the
+    // vehicle is followed exactly like another car, which is what puts traffic
+    // coming up from behind into a queue at the back of the escort formation
+    // instead of straight past the load.
+    const obstacles = world.obstacles ?? convoyObstacles(world);
+    let blockAt = null;
+    let headOn = Infinity;
+    for (const o of obstacles) {
+      // The edge facing this vehicle, and how far ahead of it that edge is.
+      const near = this.direction > 0 ? o.rear : o.front;
+      const ahead = (near - this.s) * this.direction;
+      if (ahead <= 0) continue;
+      const g = ahead - this.length * 0.5;
+
+      // Something coming the other way up this vehicle's own lane -- a police
+      // unit running ahead to the next junction, most often. This is measured
+      // against the lane rather than against where the car currently is, so
+      // that pulling off does not make the reason to pull off disappear.
+      if (this.direction < 0
+        && Math.abs(o.lateral - this.laneOffset) < o.halfWidth + this.width * 0.5 + 0.35) {
+        headOn = Math.min(headOn, g);
+      }
+
+      if (!this.overlapsLaterally(o)) continue;
+      if (g < gap) {
+        gap = g;
+        // Same-direction traffic closes on the convoy's speed; oncoming closes
+        // at the sum of both, which is why it has to stop rather than squeeze by.
+        closing = this.speed - (this.direction > 0 ? o.speed : -o.speed);
+      }
+      if (blockAt === null || (near - blockAt) * this.direction < 0) blockAt = near;
+    }
+
     // --- Get out of the way of the load ------------------------------------
     // The load is wider than a lane. Oncoming traffic cannot pass it on the
     // pavement, so it takes the shoulder and stops until the convoy is by.
     const convoy = world.convoy;
     if (convoy) {
-      const rel = (convoy.s - this.s) * this.direction;
-      const near = Math.abs(convoy.s - this.s);
+      const rel = (convoy.s - this.s) * this.direction;   // + = load is ahead of me
+      const convoyLength = convoy.length ?? 27;
 
-      if (this.direction < 0 && rel > -convoy.length && rel < 320) {
-        // Oncoming and the convoy is approaching: pull onto the shoulder.
-        this.targetOffset = -(route.laneWidth * 0.5 + route.shoulderWidth * 0.85);
+      const rearOfConvoy = world.convoyRear ?? (convoy.s - CONVOY_TAIL);
+
+      if (this.direction < 0 && this.s > rearOfConvoy && rel < 320) {
+        // Oncoming and the convoy is coming: pull onto the shoulder and wait.
+        //
+        // The wait runs until the whole formation is past, not just the load.
+        // The escorts leapfrog by running up this lane -- it is closed for as
+        // long as the move is in the area, which is the point of the police
+        // units being there at all.
+        this.targetOffset = this.shoulderOffset(-1);
         this.hazards = true;
-        if (near < 190) { desired = 0; this.state = 'pulled-over'; }
-      } else if (this.direction > 0 && convoy.s > this.s && convoy.s - this.s < 40) {
-        // Being overtaken by the convoy from behind should not happen, but if
-        // the convoy catches this vehicle, ease right and let it by.
-        this.targetOffset = route.laneWidth * 0.5 + route.shoulderWidth * 0.5;
+        if (rel < 190) { desired = 0; this.state = 'pulled-over'; }
+      } else if (this.direction > 0 && rel < 0 && rel > -(convoyLength + 40)) {
+        // The load has caught this vehicle from behind, which should not happen
+        // -- but if it does, ease right and let it by.
+        this.targetOffset = this.shoulderOffset(1);
         this.hazards = true;
-      } else if (this.direction > 0 && this.s > convoy.s && this.s - convoy.s < 500) {
-        // Ahead of the convoy in the same direction: the rear escort will not
-        // let anyone pass, so traffic behind simply queues at convoy speed.
-        desired = Math.min(desired, Math.max(0, convoy.speed));
+      } else if (this.direction > 0 && rel > 0 && rel < 420) {
+        // Coming up behind the convoy. Nothing gets past the rear escort, so
+        // traffic settles in behind it and runs at the load's speed. The rest
+        // of the spacing falls out of following the escort as a leader.
+        desired = Math.min(desired, Math.max(0, convoy.speed ?? 0));
+        this.targetOffset = this.laneOffset;
+        this.hazards = false;
+        if (this.state !== 'yielding') this.state = 'queued';
       } else {
         this.targetOffset = this.laneOffset;
         this.hazards = false;
         if (this.state !== 'driving') this.state = 'driving';
+      }
+    }
+
+    // A unit coming up this lane the wrong way, lights going, is not something
+    // to stop dead in front of and wait: get right over and let it through.
+    if (headOn < 200) {
+      this.targetOffset = this.shoulderOffset(-1);
+      this.hazards = true;
+      if (headOn < 90) {
+        desired = 0;
+        if (this.state === 'driving' || this.state === 'queued') this.state = 'pulled-over';
       }
     }
 
@@ -144,13 +272,38 @@ export class TrafficVehicle {
     this.currentOffset += (this.targetOffset - this.currentOffset) * Math.min(1, rate * dt);
 
     this.s += this.speed * this.direction * dt;
-    this.updateTransform();
+
+    // Car following is a soft constraint and a heavy enough closing rate can
+    // still overrun it. Nothing is allowed to end a frame inside the convoy.
+    if (blockAt !== null) {
+      const limit = blockAt - (this.length * 0.5 + 1.2) * this.direction;
+      if ((this.s - limit) * this.direction > 0) {
+        this.s = limit;
+        this.speed = Math.min(this.speed, Math.max(0, convoyFollowSpeed(obstacles, this)));
+        this.brakeLight = true;
+      }
+    }
+
+    this.updateTransform(dt);
   }
 
   /** True once this vehicle has run off the end of the route. */
   isOffRoute() {
     return this.s < -60 || this.s > this.route.length + 60;
   }
+}
+
+/** Speed of whatever this vehicle has run up against, so it matches it rather than stopping dead. */
+function convoyFollowSpeed(obstacles, vehicle) {
+  let best = 0;
+  let bestGap = Infinity;
+  for (const o of obstacles) {
+    if (!vehicle.overlapsLaterally(o)) continue;
+    const near = vehicle.direction > 0 ? o.rear : o.front;
+    const ahead = (near - vehicle.s) * vehicle.direction;
+    if (ahead >= -1 && ahead < bestGap) { bestGap = ahead; best = o.speed; }
+  }
+  return vehicle.direction > 0 ? best : 0;
 }
 
 /**
@@ -200,6 +353,14 @@ export class TrafficManager {
       this.spawn(convoyS, Math.random() < 0.55 ? -1 : 1);
     }
 
+    // The convoy is the same set of obstacles for everyone this frame.
+    const obstacles = world.obstacles ?? convoyObstacles(world);
+    const frame = {
+      ...world,
+      obstacles,
+      convoyRear: world.convoyRear ?? convoyRear(obstacles, convoyS - CONVOY_TAIL),
+    };
+
     // Resolve leaders per direction so car-following works within each lane.
     const lanes = { 1: [], '-1': [] };
     for (const v of this.vehicles) lanes[v.direction].push(v);
@@ -207,7 +368,7 @@ export class TrafficManager {
       const list = lanes[dir];
       list.sort((a, b) => (a.s - b.s) * dir);
       for (let i = 0; i < list.length; i++) {
-        list[i].update(dt, list[i + 1] ?? null, world);
+        list[i].update(dt, list[i + 1] ?? null, frame);
       }
     }
   }
