@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:single": "node tools/bundle.mjs",
     "preview": "vite preview",
     "test": "node --test test/*.test.js"
   },

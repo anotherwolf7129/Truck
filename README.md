@@ -5,12 +5,27 @@ on a multi-axle lowboy, with police units and pilot cars running as a convoy —
 blocking side roads ahead of you, holding traffic, and leapfrogging to the next
 junction once you are through.
 
+### Just want to play it
+
+Download **[`heavy-haul.html`](heavy-haul.html)** and open it in your browser.
+That one file is the whole game — Three.js, the simulation and the stylesheet are
+all inlined, so it needs no server, no install and no network connection.
+
+(On GitHub, use the download button on the file page. Viewing it in the web UI
+shows you the source rather than running it.)
+
+### Working on it
+
 ```
 npm install
-npm run dev      # http://localhost:5173
+npm run dev            # http://localhost:5173
+npm run build:single   # regenerate heavy-haul.html
 ```
 
 `npm test` runs the physics and mission suites headlessly (no browser needed).
+
+It wants a real GPU. Any machine with hardware WebGL is fine; software rendering
+will crawl.
 
 ---
 
