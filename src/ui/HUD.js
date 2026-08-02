@@ -21,6 +21,8 @@ export class HUD {
       brakeTemp: root.querySelector('#brake-temp'),
       brakeTempBar: root.querySelector('#brake-temp-bar'),
       advisory: root.querySelector('#advisory'),
+      limit: root.querySelector('#limit'),
+      signal: root.querySelector('#signal'),
       distance: root.querySelector('#distance'),
       grade: root.querySelector('#grade'),
       rollover: root.querySelector('#rollover-fill'),
@@ -82,9 +84,28 @@ export class HUD {
     const remaining = Math.max(0, game.route.destination.s - game.convoyS);
     this.el.distance.textContent = `${(remaining / 1609.34).toFixed(2)} mi`;
     this.el.advisory.textContent = `${Math.round(game.advisoryMph)}`;
+    this.el.limit.textContent = `${Math.round(game.speedLimitMph ?? game.route.speedLimitAt(game.convoyS))}`;
     const grade = game.route.gradeAt(game.convoyS) * 100;
     this.el.grade.textContent = `${grade >= 0 ? '+' : ''}${grade.toFixed(1)}%`;
     this.el.grade.className = grade < -4 ? 'value warn' : 'value';
+
+    // The next light. Green because a unit has it reads differently from green
+    // because it happens to be green, so the two are labelled differently.
+    const sig = game.nextSignal;
+    if (!sig) {
+      this.el.signal.textContent = '—';
+      this.el.signal.className = 'value';
+    } else {
+      const distance = sig.distance > 950
+        ? `${(sig.distance / 1609.34).toFixed(1)} mi`
+        : `${Math.round(sig.distance)} m`;
+      this.el.signal.textContent = sig.held
+        ? `held · ${distance}`
+        : `${sig.phase} · ${distance}`;
+      this.el.signal.className = sig.held
+        ? 'value ok'
+        : sig.phase === 'green' ? 'value' : 'value critical';
+    }
 
     this.el.clock.textContent = formatClock(game.clockHour);
 
@@ -108,7 +129,9 @@ export class HUD {
         const gap = Math.round(v.s - game.convoyS);
         const label = game.convoy.unitName(v);
         const state = v.state === 'blocking'
-          ? `holding ${v.assignment?.name ?? ''}`
+          ? (v.assignment?.signalised
+            ? `light at ${v.assignment.name}`
+            : `holding ${v.assignment?.name ?? ''}`)
           : v.state === 'advance' ? `running ahead`
           : v.state === 'rejoin' ? 'catching up' : 'on station';
         return `<div class="convoy-row"><span class="cv-name">${label}</span>` +
@@ -238,6 +261,10 @@ const TEMPLATE = /* html */`
         <div class="label">advisory</div>
         <div id="advisory">45</div>
       </div>
+      <div class="limit-sign">
+        <div class="label">Speed<br>Limit</div>
+        <div id="limit">45</div>
+      </div>
     </div>
 
     <div class="cluster-bars">
@@ -271,6 +298,10 @@ const TEMPLATE = /* html */`
       <div class="risk">
         <div class="risk-label">Grade</div>
         <div class="value" id="grade">0.0%</div>
+      </div>
+      <div class="risk">
+        <div class="risk-label">Next signal</div>
+        <div class="value" id="signal">—</div>
       </div>
     </div>
 

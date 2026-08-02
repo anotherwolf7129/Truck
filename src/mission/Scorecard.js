@@ -66,6 +66,13 @@ export class Scorecard {
     this.junctionsBlocked = 0;
     this.junctionsMissed = [];
     this._seenJunctions = new Set();
+
+    // Signalised junctions, judged separately. A unit holding one of these is
+    // holding a light rather than a road, and the failure it prevents is
+    // different too: a missed side road means somebody pulls out, a missed light
+    // means the load has to stop at a red on whatever grade it happens to be on.
+    this.signalsHeld = 0;
+    this.signalsRun = [];
   }
 
   /**
@@ -94,7 +101,11 @@ export class Scorecard {
     if (clutchC > this.peakClutchC) this.peakClutchC = clutchC;
     this.overRevDamage = rig.powertrain.overRevDamage;
 
-    const off = Math.abs(lateral);
+    // Measured against the lane the permit routes the load down rather than
+    // against the centreline: through town that lane is the far side of a centre
+    // turn lane, and a load sitting exactly where it belongs is four metres off
+    // centre without having wandered anywhere.
+    const off = Math.abs(lateral - this.route.convoyLaneOffset(s));
     if (off > this.maxOffRoute) this.maxOffRoute = off;
 
     // Underside contact, counted on the leading edge only.
@@ -108,6 +119,13 @@ export class Scorecard {
       this._seenJunctions.add(b.name);
       if (b.active) this.junctionsBlocked++;
       else this.junctionsMissed.push(b.name);
+
+      // Judged at the same moment, and on what the load would actually have been
+      // looking at: a green it was given, or a red it went through.
+      if (b.signal) {
+        if (b.signal.mainline === 'green') this.signalsHeld++;
+        else this.signalsRun.push(b.name);
+      }
     }
 
     // Clearance is only meaningful while actually under the structure.
@@ -174,6 +192,8 @@ export class Scorecard {
       chassisStrikes: this.chassisStrikes,
       junctionsBlocked: this.junctionsBlocked,
       junctionsMissed: this.junctionsMissed.slice(),
+      signalsHeld: this.signalsHeld,
+      signalsRun: this.signalsRun.slice(),
     };
   }
 
@@ -239,6 +259,18 @@ export class Scorecard {
         verdict: below(this.peakClutchC, 200, 320),
       },
     ];
+
+    const signalCount = this.signalsHeld + this.signalsRun.length;
+    if (signalCount > 0) {
+      out.push({
+        label: 'Signals',
+        value: `${this.signalsHeld} of ${signalCount} green`,
+        note: this.signalsRun.length
+          ? `Ran the red at: ${this.signalsRun.join(', ')}`
+          : 'A unit had the light at every signal on the route',
+        verdict: this.signalsRun.length ? Verdict.FAIL : Verdict.PASS,
+      });
+    }
 
     // Only worth reporting if a bridge was actually passed under.
     if (this.lowestClearanceMargin !== Infinity) {

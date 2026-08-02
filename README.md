@@ -95,6 +95,35 @@ corner speed is limited by the load going over, not by grip. That is why the
 advisory speeds are what they are, and why the rollover meter deserves more of
 your attention than the speedometer.
 
+## The road
+
+The route is four different roads, and the cross-section is a first-class part
+of the world rather than a pair of constants. Sections are declared at arc
+lengths and blended across a taper, so a lane opens the way a real one does — the
+pavement widens first, and the lane is only usable once the taper has finished.
+
+| | Lanes each way | Centre | Posted |
+|---|---|---|---|
+| Bennett yard road | 1 | — | 30 |
+| County Highway 14 | 1 | double yellow | 45 |
+| Ridge Road | 1, no shoulder | double yellow | 35 |
+| Cloverdale Pike | 2 | centre turn lane | 35 |
+| Substation approach | 1 | — | 25 |
+
+Almost everything the other vehicles on the road do falls out of that. On the
+county highway a 3.66 m load in a 3.7 m lane leaves oncoming traffic nowhere to
+be except the shoulder, stopped, until the whole formation is past. On the
+arterial the same load takes the inside lane and everything coming the other way
+simply moves over one and keeps going — the move stops being something that
+shuts the road in both directions. The convoy test measures both: **86%** of
+oncoming traffic pulls over and stops on the two-lane road, against **2%**
+through town.
+
+The paint is geometry, not a baked texture, because the road is not one width for
+its whole length: edge lines that follow the pavement wherever it goes, a double
+yellow that becomes a turn lane's markings when there is a turn lane, and lane
+dividers that exist exactly where there is a second lane to divide.
+
 ## The convoy
 
 Four escorts, and the interesting behaviour is the **leapfrog**:
@@ -104,17 +133,62 @@ Four escorts, and the interesting behaviour is the **leapfrog**:
   release and run up the closed lane past you to take the next junction nobody is
   covering. Done properly the load never stops, and it looks like every side road
   on the route happens to be closed.
+  Through town they hold junctions a different way — see below.
 - **Lead** (pilot car) — 140 m out front carrying a height pole set just above the
   load, calling bridges, corners and grades over the radio before you can see them.
 - **Chase** (pilot car) — 95 m behind, keeping following traffic off your tail.
 
 Ambient traffic runs an Intelligent Driver Model, and treats the load and every
 escort as solid: it follows them, queues behind them and cannot pass through them.
-Oncoming vehicles take the shoulder and stop, because the load is wider than the
-lane it is travelling in and there is physically nowhere for them to go — and they
-stay off until the whole formation is past, not just the load, because that lane
-is what the police units leapfrog up. Traffic coming up behind joins the back of
-the escort formation and runs at convoy speed; nothing gets past the rear unit.
+Where there is one lane each way, oncoming vehicles take the shoulder and stop,
+because the load is wider than the lane it is travelling in and there is
+physically nowhere for them to go — and they stay off until the whole formation
+is past, not just the load, because that lane is what the police units leapfrog
+up. Where there are two, they move over one instead and carry on.
+
+Traffic coming up behind joins the back of the escort formation and runs at
+convoy speed; nothing gets past the rear unit. On the arterial that takes two
+units, because there are two lanes for anybody behind to try it in — the chase
+car sits in the inside lane behind the load and Unit 8 takes the kerb lane, and a
+rolling block with a hole in it is not a rolling block.
+
+## Signals
+
+A signalised intersection changes the escort job completely, and that difference
+is the reason the lights are simulated rather than drawn.
+
+At a side road with a stop sign the officer has to physically close it: cross the
+carriageway, park across the mouth, and shut the highway down for the few seconds
+that takes. At a signal he does not. He **takes the light** — mainline green,
+every other approach red — from the kerb on his own side of the road, without
+ever crossing in front of anybody. Five of the fourteen junctions on the route
+are signalised, and the mission test asserts the load never arrives at one that
+is not green for it.
+
+The controllers are real: a fixed cycle per intersection, each starting somewhere
+else in its own, with yellow and all-red clearance intervals that no two
+conflicting approaches ever overlap. Ambient traffic reads them, stops for a red
+and commits through a yellow it cannot stop for. Preemption freezes the
+controller at the top of the mainline green and restarts the cycle when the unit
+releases it, so the cross street gets a full green afterwards rather than the
+tail of one.
+
+A four-way also has traffic on it that is going somewhere. Cars come off the
+cross street and drive straight over the highway when the light gives them the
+chance, hold on the stop line when a unit has taken it, and will not pull out in
+front of the load whatever the signal says — the convoy test asserts nothing is
+ever in the intersection box as the load goes through it.
+
+## Cloverdale
+
+The last two miles run through a built-up area, which is a different kind of
+driving and is signed and built as one: kerbs and footways, houses set back off
+the road with driveways and mailboxes, street lighting on alternate poles, a
+signal every quarter mile, and a posted 35 that the advisory speed is now held
+under everywhere on the route. The ground beside the road is graded flat for two
+lot depths before it blends back into the terrain — a country road can run along
+the top of a fill with the ground falling away from the shoulder, but a street
+with houses on it cannot.
 
 None of these vehicles are simulated with the rig's physics — they are an arc
 length along the route and a lane offset — so their pose is reconstructed for
@@ -131,13 +205,15 @@ the load.
 7.5 miles from the yard to Cloverdale Substation, surveyed the way a permit route
 is — every obstruction known in advance:
 
-- Ten junctions for the escorts to hold
+- Fourteen junctions for the escorts to hold, five of them signalised crossroads
 - Three bridges with posted clearances; the tightest leaves **87 cm** over a
   13'-7" load, and the lead car's pole is your proxy for it
 - A 159 m switchback that needs the trailer's rear steer
 - A sustained **−9% descent**, where the compression brake is not optional
-  equipment — the mission test measures 211 °C in the drums without it against
-  145 °C with it
+  equipment — the mission test measures 205 °C in the drums without it against
+  139 °C with it
+- Two miles of suburban arterial at the end of it, where the road is five lanes
+  wide and the escort work is lights rather than roadblocks
 
 ## Sound
 
@@ -159,8 +235,8 @@ context before then. <kbd>M</kbd> mutes, and the setting sticks.
 The move ends when the load reaches the substation or goes over on its side, and
 either way you get a permit officer's sign-off: how close the load came to
 rolling, how hot the drums got, whether the air held, whether the rig ever left
-the surveyed corridor, whether every junction was actually held, and whether the
-deck ever touched down.
+the lane the permit routes it down, whether every junction was actually held,
+whether a unit had every light, and whether the deck ever touched down.
 
 The scorecard behind it (`src/mission/Scorecard.js`) is the same object the
 mission test scores its run with, so the numbers on screen are the numbers the
@@ -189,14 +265,16 @@ Release the parking brake to start. Take the switchback at eight.
 ```
 src/
   physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig
-  world/       Route (spline, junctions, bridges, grades), Ground (terrain + grip)
-  ai/          Traffic (IDM), Escort (blockades, leapfrog, radio), RoadPose
+  world/       Route (spline, junctions, bridges, grades), Corridor (lanes and
+               cross-section), Signal (controllers), Ground (terrain + grip)
+  ai/          Traffic (IDM, lanes, signals), Escort (blockades, leapfrog,
+               preemption, radio), CrossTraffic, RoadPose
   render/      Scene (sky, lighting, probe), Models, WorldMesh
   audio/       Audio (procedural engine, jake, air, scrub, radio)
   mission/     Scorecard (how the move actually went)
   ui/          HUD, Debrief, style
   core/        Input
-test/          physics, convoy, mission, scorecard
+test/          physics, convoy, mission, road, scorecard
 tools/         layout.mjs (load analysis), plus driving and browser harnesses
 ```
 

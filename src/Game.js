@@ -74,7 +74,7 @@ export class Game {
     // --- State ---------------------------------------------------------------
     this.convoyS = 0;
     this.convoySpeed = 0;
-    this.convoyLateral = this.route.laneWidth * 0.5;
+    this.convoyLateral = this.route.convoyLaneOffset(0);
     this.advisoryMph = 45;
     this.clockHour = 9.25;
     this.cameraMode = 'chase';
@@ -164,7 +164,7 @@ export class Game {
 
   reset() {
     const startS = this.route.staging.s;
-    const pos = this.route.positionAt(startS, this.route.laneWidth * 0.5, new Vector3());
+    const pos = this.route.positionAt(startS, this.route.convoyLaneOffset(startS), new Vector3());
     const heading = this.route.headingAt(startS);
 
     this.rig.placeAt(pos, heading, this.ground);
@@ -200,7 +200,7 @@ export class Game {
    * bridge, a blocked junction -- without driving the seven miles to reach it.
    */
   jumpTo(s, speedMph = 0) {
-    const pos = this.route.positionAt(s, this.route.laneWidth * 0.5, new Vector3());
+    const pos = this.route.positionAt(s, this.route.convoyLaneOffset(s), new Vector3());
     const heading = this.route.headingAt(s);
     this.rig.placeAt(pos, heading, this.ground);
     this.rig.air.parkingBrake = speedMph === 0;
@@ -318,7 +318,22 @@ export class Game {
     const load = this.route.project(this.rig.trailer.body.position.x, this.rig.trailer.body.position.z);
     this.convoyLateral = load.lateral;
     this.advisoryMph = this.route.advisorySpeedAt(this.convoyS);
-    this.offRoute = Math.abs(proj.lateral) > this.route.roadHalfWidth + 6;
+    this.speedLimitMph = this.route.speedLimitAt(this.convoyS);
+    this.offRoute = Math.abs(proj.lateral) > this.route.halfWidthAt(this.convoyS) + 6;
+
+    // The next light, and whether anybody has it. Both go on the dash: a red
+    // with no unit on it is the one thing on this route that can stop the load.
+    this.nextSignal = null;
+    const signalJunction = this.route.nextSignal(this.convoyS);
+    if (signalJunction && signalJunction.s - this.convoyS < 700) {
+      const blockade = this.convoy.blockades.find((b) => b.junction === signalJunction);
+      this.nextSignal = {
+        name: signalJunction.name,
+        distance: signalJunction.s - this.convoyS,
+        phase: blockade?.signal?.mainline ?? 'green',
+        held: !!blockade?.active,
+      };
+    }
 
     // Clearance check against the next bridge, using the top of the load.
     this.clearanceAlarm = null;
@@ -483,10 +498,25 @@ export class Game {
     }
   }
 
-  /** Cars waiting at the blocked side roads. */
+  /** Cars waiting at the blocked side roads, and traffic on the cross streets. */
   syncBlockades() {
     const seen = new Set();
     for (const b of this.convoy.blockades) {
+      // A four-way has traffic on it that is going somewhere. It is held on the
+      // stop line while a unit has the light and crosses in front of the convoy
+      // the rest of the time, which is most of what a town looks like from a cab.
+      for (const v of b.cross?.vehicles ?? []) {
+        const key = `x${v.id}`;
+        seen.add(key);
+        let entry = this.blockadeVisuals.get(key);
+        if (!entry) {
+          entry = { kind: v.kind, mesh: this.acquireVehicle(v.kind, (v.id * 0.29) % 1) };
+          this.blockadeVisuals.set(key, entry);
+        }
+        this.placeRoadVehicle(entry.mesh, v, v.heading, { brake: v.brakeLight || v.speed < 0.3 });
+        entry.mesh.visible = true;
+      }
+
       for (let i = 0; i < b.queue.length; i++) {
         const c = b.queue[i];
         const key = `${b.name}:${i}`;
@@ -669,6 +699,7 @@ export class Game {
     this.syncEscorts(dt);
     this.syncTraffic();
     this.syncBlockades();
+    this.worldMesh.updateSignals(this.route.signals);
     this.updateCamera(dt);
 
     this.render.update(this.rig.tractor.body.position);

@@ -31,15 +31,13 @@ function seedRandom(seed) {
  * staying out of the load, and queueing behind the rear escort instead of
  * streaming past a 3.66 m wide transformer.
  */
-function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
+function runConvoy({ minutes = 12, stopAt = null, seed = 20260801, startS = 30 } = {}) {
   const restoreRandom = seedRandom(seed);
   const route = new Route();
   const convoy = new ConvoyManager(route, null);
   const traffic = new TrafficManager(route, { density: 1 });
 
-  LOAD.lateral = route.laneWidth * 0.5;
-
-  let s = 30;
+  let s = startS;
   let speed = 0;
   convoy.reset(s);
 
@@ -59,6 +57,14 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
     mainlineHeldFrames: 0,
     heldAfterParking: 0,
     yieldingFrames: 0,
+    // Oncoming traffic, counted separately for the two-lane road and the
+    // arterial, since what it is supposed to do about the load is different.
+    oncoming: { rural: 0, ruralStopped: 0, town: 0, townStopped: 0, townKerbLane: 0 },
+    crossVehicleFrames: 0,
+    crossInsideLoad: 0,
+    signalsSeen: [],
+    signalsGreen: [],
+    rearLanes: new Set(),
   };
 
   const overlapsLoad = (at, halfLen, lateral, halfWidth) =>
@@ -76,6 +82,10 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
     s += speed * dt;
     if (s > route.length - 40) break;
 
+    // The load runs in the lane the permit routes it down, which is the only
+    // lane there is on the county road and the inside one through town.
+    LOAD.lateral = route.convoyLaneOffset(s);
+
     convoy.traffic = traffic.vehicles;
     convoy.update(dt, s, speed, 4.95, LOAD);
     traffic.update(dt, {
@@ -91,11 +101,38 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
     // seconds; once it is parked on the mouth of the side road the highway is
     // supposed to reopen.
     for (const b of convoy.blockades) {
-      if (!b.holdsMainline) continue;
-      report.mainlineHeldFrames++;
-      const unit = b.assignedTo;
-      const across = b.side * (route.roadHalfWidth + 1.5);
-      if (unit && Math.abs(unit.lateral - across) <= 0.6) report.heldAfterParking++;
+      if (b.holdsMainline) {
+        report.mainlineHeldFrames++;
+        const unit = b.assignedTo;
+        const across = b.side * (route.halfWidthAt(b.s) + 1.5);
+        if (unit && Math.abs(unit.lateral - across) <= 0.6) report.heldAfterParking++;
+      }
+
+      // Cross traffic on a four-way, which crosses in front of the load unless
+      // something is stopping it.
+      for (const c of b.cross?.vehicles ?? []) {
+        report.crossVehicleFrames++;
+        const alongRoute = Math.abs(c.u) < 12;
+        if (alongRoute && Math.abs(b.s - s) < LOAD.length + 12) report.crossInsideLoad++;
+      }
+    }
+
+    // The signals, judged the moment the load reaches each one. Anything behind
+    // where this run started was never escorted and is not the escorts' fault.
+    for (const b of convoy.blockades) {
+      if (!b.signal || b.s < startS + 120) continue;
+      if (report.signalsSeen.includes(b.name) || s <= b.s - 5) continue;
+      report.signalsSeen.push(b.name);
+      if (b.signal.mainline === 'green') report.signalsGreen.push(b.name);
+    }
+
+    // Only once the taper is finished and the cross-section has settled; the
+    // lane centres slide outward all the way through it.
+    if (route.laneCountAt(s) > 1 && route.medianAt(s) > 3.6) {
+      for (const unit of convoy.vehicles) {
+        if (unit.state !== 'station' || unit.s > s - 40) continue;
+        report.rearLanes.add(Math.round(unit.targetLateral * 10) / 10);
+      }
     }
 
     for (const unit of convoy.vehicles) {
@@ -118,6 +155,18 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801 } = {}) {
       if (v.direction > 0 && v.s > rearPilot.s + 2) report.passedTheRearEscort++;
       if (v.state === 'queued') report.queuedFrames++;
       if (v.state === 'yielding') report.yieldingFrames++;
+
+      // What oncoming traffic does about the load, by the kind of road it is on.
+      // Counted as pulling over rather than as being stopped: a car sitting at a
+      // red light in town is stopped, but it is not stopped because of the load,
+      // and it is the load's effect on the other carriageway that is at issue.
+      if (v.direction < 0 && Math.abs(v.s - s) < 260) {
+        const town = route.laneCountAt(v.s) > 1;
+        const bucket = town ? 'town' : 'rural';
+        report.oncoming[bucket]++;
+        if (v.state === 'pulled-over') report.oncoming[`${bucket}Stopped`]++;
+        if (town && v.lane === route.laneCountAt(v.s) - 1) report.oncoming.townKerbLane++;
+      }
 
       const road = v.pose.roadHeading(v.s);
       report.maxYaw = Math.max(report.maxYaw, Math.abs(v.heading - road));
@@ -194,6 +243,58 @@ test('the radio keeps reporting once its buffer is full', () => {
   assert.strictEqual(radio.total, count, 'every call must be counted, not just the buffered ones');
   assert.strictEqual(heard.length, count, 'every call must reach the listeners');
   assert.strictEqual(radio.recent(1)[0].text, `call ${count - 1}`, 'the newest call must be readable');
+});
+
+let town;
+test('oncoming traffic moves over on the arterial instead of stopping', () => {
+  // The whole point of the road widening: on the county highway a 3.66 m load
+  // in a 3.7 m lane leaves oncoming traffic nowhere to be except the shoulder,
+  // stopped. Through town it can move over one lane and keep going, and the
+  // move stops being something that shuts the road down in both directions.
+  town = runConvoy({ minutes: 9, startS: 8000, seed: 77712 });
+  const o = town.oncoming;
+  const townStopped = o.town ? o.townStopped / o.town : 0;
+  console.log(
+    `  oncoming while the load is by: ${(townStopped * 100).toFixed(0)}% pulled over in town ` +
+    `(${o.town} frames), ${(100 * o.ruralStopped / Math.max(1, o.rural)).toFixed(0)}% on the two-lane`
+  );
+  assert.ok(o.town > 500, 'no oncoming traffic met the load in town at all');
+  assert.ok(townStopped < 0.35, `${(townStopped * 100).toFixed(0)}% of oncoming traffic still pulling over in town`);
+  assert.ok(o.townKerbLane / o.town > 0.6, 'oncoming traffic did not move to the kerb lane for the load');
+  assert.strictEqual(town.trafficInsideLoad, 0);
+  assert.strictEqual(town.passedTheRearEscort, 0, 'traffic got past the rolling block in the second lane');
+});
+
+test('a two-lane road still leaves oncoming traffic no option but the shoulder', () => {
+  const o = moving.oncoming;
+  const stopped = o.ruralStopped / Math.max(1, o.rural);
+  console.log(`  ${(stopped * 100).toFixed(0)}% of oncoming traffic pulled over for the load on the two-lane`);
+  assert.ok(o.rural > 500, 'no oncoming traffic met the load on the two-lane road');
+  assert.ok(stopped > 0.5, 'oncoming traffic drove past the load on a road with one lane each way');
+});
+
+test('the rear units cover both lanes through town', () => {
+  // Two lanes each way means two lanes for anybody behind to try to get up, so
+  // the chase car and the rear unit take one each. A rolling block with a hole
+  // in it is not a rolling block.
+  console.log(`  rear formation lane offsets: ${[...town.rearLanes].join(', ')}`);
+  assert.ok(town.rearLanes.size >= 2,
+    'the rear escorts all rode in the same lane on a road with two of them');
+});
+
+test('the escorts take the lights, and nothing crosses in front of the load', () => {
+  console.log(
+    `  ${town.signalsGreen.length} of ${town.signalsSeen.length} signals green for the load; ` +
+    `${town.crossVehicleFrames} cross-street vehicle-frames`
+  );
+  assert.ok(town.signalsSeen.length >= 2, 'the run never reached a signalised junction');
+  assert.deepStrictEqual(
+    town.signalsSeen.filter((n) => !town.signalsGreen.includes(n)), [],
+    'the load arrived at a light that was not green for it'
+  );
+  assert.ok(town.crossVehicleFrames > 0, 'the cross streets were empty');
+  assert.strictEqual(town.crossInsideLoad, 0,
+    'a car on the cross street was in the intersection as the load went through it');
 });
 
 test('a load that stops still is not run into from behind', () => {

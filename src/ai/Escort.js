@@ -1,7 +1,9 @@
 import { Vector3 } from 'three';
 import { RoadPose } from './RoadPose.js';
+import { CrossTraffic } from './CrossTraffic.js';
 
 const _v = new Vector3();
+const _dir = new Vector3();
 
 export const Role = {
   LEAD_POLICE: 'lead_police',
@@ -69,14 +71,30 @@ export class Blockade {
     this.assignedTo = null;
     this.released = false;
 
+    // The controller, if this junction has one. Holding a signalised junction
+    // means taking the light rather than parking across the mouth of the road,
+    // which is both quicker and never shuts the highway down.
+    this.signal = route.signals?.for?.(junction) ?? null;
+
+    // A four-way has traffic on it that is going somewhere rather than a queue
+    // of cars waiting to turn out. That traffic is simulated; the queue at a
+    // T junction is not.
+    this.crossing = !!junction.crossing;
+    this.cross = this.crossing ? new CrossTraffic(this, route) : null;
+
     // Cross traffic held at the stop line.
     this.queue = [];
     this.queueSeed = Math.random();
   }
 
+  /** True if holding this junction means taking a light rather than blocking it. */
+  get signalised() {
+    return !!this.signal;
+  }
+
   /** World position of the mouth of the side road. */
   mouth(out = new Vector3()) {
-    return this.route.positionAt(this.s, this.side * (this.route.roadHalfWidth + 3), out);
+    return this.route.positionAt(this.s, this.side * (this.route.halfWidthAt(this.s) + 3), out);
   }
 
   /** Direction the side road runs, away from the highway. */
@@ -85,9 +103,16 @@ export class Blockade {
     return out.copy(sample.lateral).multiplyScalar(this.side).normalize();
   }
 
-  /** Populates the waiting cross traffic as the convoy gets close. */
+  /**
+   * Populates the waiting cross traffic as the convoy gets close.
+   *
+   * Only for a side road that ends here. A four-way already has traffic on it
+   * that is going somewhere, and that traffic queues itself at the stop line
+   * when the junction is held -- parking a second row of stationary cars in the
+   * middle of the same road would put them in each other.
+   */
   populate() {
-    if (this.queue.length) return;
+    if (this.cross || this.queue.length) return;
     const count = 1 + Math.floor(this.queueSeed * 3);
     for (let i = 0; i < count; i++) {
       this.queue.push({
@@ -100,15 +125,25 @@ export class Blockade {
     }
   }
 
-  update() {
+  update(dt = 0, ctx = null) {
     const mouth = this.mouth(_v);
-    const dir = this.direction(new Vector3());
+    const dir = this.direction(_dir);
     for (const c of this.queue) {
       c.position.copy(mouth).addScaledVector(dir, c.distance);
       c.position.y = this.route.at(this.s).position.y;
       // Facing back toward the highway, waiting to pull out.
       c.heading = Math.atan2(-dir.x, -dir.z);
       c.waiting = this.active;
+    }
+
+    if (this.cross && ctx) {
+      this.cross.update(dt, {
+        convoyS: ctx.convoyS,
+        convoySpeed: ctx.convoySpeed,
+        convoyLength: ctx.convoyLength,
+        signal: this.signal,
+        held: this.active,
+      });
     }
   }
 }
@@ -127,7 +162,7 @@ export class EscortVehicle {
     this.isPolice = role === Role.LEAD_POLICE || role === Role.REAR_POLICE;
 
     this.s = s;
-    this.lateral = route.laneWidth * 0.5;
+    this.lateral = route.laneOffsetAt(s, 1, 0);
     this.targetLateral = this.lateral;
     this.speed = 0;
     this.maxSpeed = this.isPolice ? 38 : 33;   // m/s
@@ -244,6 +279,18 @@ export class ConvoyManager {
       [Role.REAR_POLICE]: -170,
     };
 
+    // Which lane each unit rides in, counting outward from the centreline. On a
+    // two-lane road there is only one and this is moot. On the arterial it is
+    // what stops the rolling block having a hole in it: the load and the chase
+    // car take the inside lane, and the rear police unit takes the kerb lane, so
+    // traffic coming up behind meets somebody whichever lane it is in.
+    this.stationLanes = {
+      [Role.LEAD_POLICE]: 0,
+      [Role.LEAD_PILOT]: 0,
+      [Role.REAR_PILOT]: 0,
+      [Role.REAR_POLICE]: 1,
+    };
+
     this.vehicles = [
       new EscortVehicle({ route, role: Role.LEAD_POLICE }),
       new EscortVehicle({ route, role: Role.LEAD_PILOT }),
@@ -259,7 +306,7 @@ export class ConvoyManager {
     // around it to leapfrog, and it is wide enough that "use the shoulder" is
     // not automatically an answer -- so both of these are kept current from the
     // rig rather than assumed.
-    this.loadLateral = route.laneWidth * 0.5;
+    this.loadLateral = route.convoyLaneOffset(0);
     this.loadHalfWidth = rig?.cargo?.size ? rig.cargo.size.x * 0.5 : 1.9;
 
     // Ambient traffic, if the caller wants a unit to look before it swings
@@ -282,7 +329,8 @@ export class ConvoyManager {
       v.state = 'station';
       v.assignment = null;
       v.lightsOn = v.isPolice;
-      v.place(s + this.stations[v.role], this.route.laneWidth * 0.5);
+      const station = s + this.stations[v.role];
+      v.place(station, this.stationLateral(v, station));
     }
     for (const b of this.blockades) {
       b.active = false;
@@ -290,8 +338,17 @@ export class ConvoyManager {
       b.released = false;
       b.assignedTo = null;
       b.queue.length = 0;
+      if (b.cross) b.cross.vehicles.length = 0;
     }
+    this.route.signals?.reset?.();
     this._announced.clear();
+  }
+
+  /** The lane centre a unit rides in at arc length `s`. */
+  stationLateral(unit, s = unit.s) {
+    const lanes = this.route.laneCountAt(s);
+    const index = Math.min(this.stationLanes[unit.role] ?? 0, lanes - 1);
+    return this.route.laneOffsetAt(s, 1, index);
   }
 
   get leadPilot() { return this.vehicles.find((v) => v.role === Role.LEAD_PILOT); }
@@ -315,9 +372,15 @@ export class ConvoyManager {
         done.holdsMainline = false;
         done.released = true;
         done.assignedTo = null;
+        // Give the light back. It restarts its cycle, so the cross street gets a
+        // proper mainline green before its turn rather than the tail of one.
+        if (done.signal?.preemptedBy === unit) done.signal.release();
         unit.assignment = null;
         unit.state = 'rejoin';
-        this.radio.say(this.unitName(unit), `${done.name} is clear, releasing traffic. Coming back up.`,
+        this.radio.say(this.unitName(unit),
+          done.signalised
+            ? `${done.name} is clear, dropping the light. Coming back up.`
+            : `${done.name} is clear, releasing traffic. Coming back up.`,
           { key: `rel${done.s}`, cooldown: 30, time: this.time });
       }
     }
@@ -340,7 +403,10 @@ export class ConvoyManager {
       candidate.assignedTo = unit;
       unit.assignment = candidate;
       unit.state = 'advance';
-      this.radio.say(this.unitName(unit), `Running ahead to ${candidate.name}, I'll hold it for you.`,
+      this.radio.say(this.unitName(unit),
+        candidate.signalised
+          ? `Running ahead to ${candidate.name}, I'll take the light there.`
+          : `Running ahead to ${candidate.name}, I'll hold it for you.`,
         { key: `adv${candidate.s}`, cooldown: 30, time: this.time });
     }
   }
@@ -348,22 +414,20 @@ export class ConvoyManager {
   /**
    * The lane position a unit uses to get around the load.
    *
-   * A 3.66 m load in a 3.7 m lane leaves nothing usable beside it: the shoulder
-   * is only 2.4 m and the load already overhangs into most of it. So the pass
-   * goes down the other side of the road -- which is exactly why the escorts
-   * close the oncoming lane and why oncoming traffic is sitting on the far
-   * shoulder while the load goes through.
+   * Always the inside lane on the other side of the road. A 3.66 m load in a
+   * 3.7 m lane leaves nothing usable beside it on a two-lane road, and in town
+   * the only other option is the kerb lane, which by then has every car that
+   * caught the convoy queued up in it. So the pass goes down the oncoming side
+   * -- which is exactly why the escorts close that lane, and why oncoming
+   * traffic is either on the shoulder or over in its own kerb lane while the
+   * load goes through.
    */
   passLateral(unit) {
     const r = this.route;
     const half = unit.width * 0.5;
     const clearance = 0.6;
-    const roomRight = r.roadHalfWidth - (this.loadLateral + this.loadHalfWidth);
-    if (roomRight >= half * 2 + clearance) {
-      return this.loadLateral + this.loadHalfWidth + clearance + half;
-    }
     return Math.min(
-      -r.laneWidth * 0.5,
+      r.laneOffsetAt(unit.s, -1, 0),
       this.loadLateral - this.loadHalfWidth - clearance - half
     );
   }
@@ -407,7 +471,7 @@ export class ConvoyManager {
    * time.
    */
   mergeBack(unit, want) {
-    if (Math.abs(unit.lateral) < this.route.roadHalfWidth - 1) return want;
+    if (Math.abs(unit.lateral) < this.route.halfWidthAt(unit.s) - 1) return want;
     return this.laneClear(unit, want) ? want : unit.lateral;
   }
 
@@ -440,6 +504,27 @@ export class ConvoyManager {
     }
   }
 
+  /**
+   * Where a unit sits while it is holding a junction, and where it stops to do
+   * it.
+   *
+   * The two kinds of junction are held in completely different ways. A side road
+   * with a stop sign has to be physically closed, so the unit crosses the
+   * carriageway and parks across the mouth of it. A signalised crossroads does
+   * not: the unit takes the light, which holds every other approach for it, and
+   * it can do that from the kerb on its own side of the road without ever
+   * crossing in front of anybody.
+   */
+  blockPosition(b, unit) {
+    if (b.signalised) {
+      return {
+        s: b.s - 16,
+        lateral: this.route.edgeOffsetAt(b.s) + unit.width * 0.5 + 0.5,
+      };
+    }
+    return { s: b.s, lateral: b.side * (this.route.halfWidthAt(b.s) + 1.5) };
+  }
+
   updatePolice(dt, unit) {
     const b = unit.assignment;
 
@@ -448,10 +533,10 @@ export class ConvoyManager {
       // blocking position.
       const passing = unit.s < this.convoyS + 40;
       unit.targetLateral = this.mergeBack(
-        unit, passing ? this.passLateral(unit) : this.route.laneWidth * 0.5);
+        unit, passing ? this.passLateral(unit) : this.stationLateral(unit));
       unit.lightsOn = true;
 
-      const stopS = b.s - 6;
+      const stopS = this.blockPosition(b, unit).s - 6;
       unit.driveTo(dt, stopS, this.convoySpeed, 1.9);
       this.separate(unit);
 
@@ -459,8 +544,11 @@ export class ConvoyManager {
         unit.state = 'blocking';
         b.active = true;
         b.populate();
+        if (b.signal) b.signal.preempt(unit);
         this.radio.say(this.unitName(unit),
-          `${b.name} is blocked, cross traffic is stopped. You're clear through.`,
+          b.signalised
+            ? `I have the light at ${b.name}, everybody else is red. You're clear through.`
+            : `${b.name} is blocked, cross traffic is stopped. You're clear through.`,
           { key: `blk${b.s}`, cooldown: 30, time: this.time });
       }
       return;
@@ -468,14 +556,16 @@ export class ConvoyManager {
 
     if (b && unit.state === 'blocking') {
       unit.lightsOn = true;
+      const spot = this.blockPosition(b, unit);
       // Sit across the mouth of the side road, once there is room to get over.
-      const across = b.side * (this.route.roadHalfWidth + 1.5);
-      unit.holdAt(dt, b.s, this.laneClear(unit, across) ? across : unit.lateral);
+      unit.holdAt(dt, spot.s, this.laneClear(unit, spot.lateral) ? spot.lateral : unit.lateral);
       // Getting there means sweeping across the carriageway with the lights on,
       // and for those few seconds the unit owns the whole road, not just the
       // mouth of the side street. Once it is parked the highway reopens and only
-      // the side road stays shut.
-      b.holdsMainline = Math.abs(unit.lateral - across) > 0.6;
+      // the side road stays shut. A light is held without any of that, so it
+      // never shuts the highway at all.
+      b.holdsMainline = !b.signalised && Math.abs(unit.lateral - spot.lateral) > 0.6;
+      if (b.signal) b.signal.preempt(unit);
       return;
     }
 
@@ -487,7 +577,7 @@ export class ConvoyManager {
     // only merges back once it is at its station.
     const overtaking = unit.state === 'rejoin' && unit.s < station - 10;
     unit.targetLateral = this.mergeBack(
-      unit, overtaking ? this.passLateral(unit) : this.route.laneWidth * 0.5);
+      unit, overtaking ? this.passLateral(unit) : this.stationLateral(unit, station));
     unit.lightsOn = true;
     unit.driveTo(dt, station, this.convoySpeed, urgency);
     this.separate(unit);
@@ -497,7 +587,7 @@ export class ConvoyManager {
 
   updatePilot(dt, unit) {
     const station = this.convoyS + this.stations[unit.role];
-    unit.targetLateral = this.route.laneWidth * 0.5;
+    unit.targetLateral = this.stationLateral(unit, station);
     unit.lightsOn = true;
     unit.driveTo(dt, station, this.convoySpeed, 1.1);
     this.separate(unit);
@@ -555,6 +645,60 @@ export class ConvoyManager {
       this.radio.say('Lead', 'Long grade down. Get it in a low gear and stay off the service brakes.',
         { priority: 'warning', key: 'grade', cooldown: 90, time: this.time });
     }
+
+    this.callRoadChanges(s);
+    this.callSignals();
+  }
+
+  /**
+   * The lead car calling the road itself: where it widens, where it narrows
+   * again, and what the load is supposed to do about it.
+   */
+  callRoadChanges(leadS) {
+    const route = this.route;
+    const here = route.kindAt(this.convoyS);
+    const ahead = route.kindAt(leadS + 120);
+    if (ahead === here) return;
+
+    const key = `road${ahead}${Math.round(leadS / 500)}`;
+    if (this._announced.has(key)) return;
+    this._announced.add(key);
+
+    if (ahead === 'suburban') {
+      this.radio.say('Lead',
+        'Town line ahead — two lanes each way and a turn lane. Take the inside lane and hold it; '
+        + 'Unit 8 will sit on the kerb lane behind you.',
+        { priority: 'warning', time: this.time });
+    } else if (here === 'suburban') {
+      this.radio.say('Lead',
+        'Lanes drop back to one at the substation approach. Ease left as the paint runs out.',
+        { priority: 'warning', time: this.time });
+    } else if (ahead === 'mountain') {
+      this.radio.say('Lead', 'Road narrows on the climb — no shoulder to speak of from here up.',
+        { time: this.time });
+    }
+  }
+
+  /**
+   * A light nobody is holding.
+   *
+   * The whole point of a unit going ahead is that the load never meets a red, so
+   * a signal coming up with no unit on it is worth saying out loud -- it is the
+   * one thing on this route that can stop a 212,000 lb load on a grade.
+   */
+  callSignals() {
+    const junction = this.route.nextSignal(this.convoyS);
+    if (!junction) return;
+    const distance = junction.s - this.convoyS;
+    if (distance > 300 || distance < 40) return;
+
+    const b = this.blockades.find((x) => x.junction === junction);
+    if (!b || b.active || b.assignedTo) return;
+    if (b.signal?.mainline === 'green') return;
+
+    this.radio.say('Lead',
+      `${junction.name} is red and nobody is on it. Start slowing now if we can't get a unit up.`,
+      { priority: 'critical', key: `sig${junction.s}`, cooldown: 45, time: this.time });
   }
 
   /**
@@ -574,6 +718,11 @@ export class ConvoyManager {
       if (Number.isFinite(load.length)) this.convoyLength = load.length;
     }
 
+    // The lights run off the convoy's clock. They are part of the world rather
+    // than of the escort operation, but holding one is escort work, and this is
+    // the update everything on the road is already synchronised to.
+    this.route.signals?.update?.(dt);
+
     this.assignBlockades();
 
     for (const unit of this.vehicles) {
@@ -581,7 +730,12 @@ export class ConvoyManager {
       else this.updatePilot(dt, unit);
     }
 
-    for (const b of this.blockades) b.update();
+    const ctx = {
+      convoyS,
+      convoySpeed: this.convoySpeed,
+      convoyLength: this.convoyLength,
+    };
+    for (const b of this.blockades) b.update(dt, ctx);
     this.callHazards();
   }
 
