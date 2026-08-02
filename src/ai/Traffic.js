@@ -1,4 +1,5 @@
 import { RoadPose } from './RoadPose.js';
+import { Phase } from '../world/Signal.js';
 
 /**
  * Intelligent Driver Model acceleration.
@@ -50,9 +51,53 @@ export function convoyObstacles(world) {
       speed: Math.max(0, e.speed ?? 0),
       lateral: e.lateral ?? 0,
       halfWidth: (e.width ?? 1.95) * 0.5,
+      parked: e.state === 'blocking',
     });
   }
   return out;
+}
+
+/**
+ * The band of road the move occupies, in metres either side of the centreline.
+ *
+ * On a two-lane road this is academic -- the load is wider than its lane and the
+ * escorts leapfrog up the other one, so the answer is always "all of it". On a
+ * five-lane arterial it is the whole point: the load has the inside lane, the
+ * units run up the inside lane on the other side, the turn lane between them is
+ * nobody's, and the two kerb lanes are left alone. Traffic that knows where the
+ * band is can simply move over one and keep going instead of stopping on the
+ * shoulder.
+ *
+ * Units parked on a side road are excluded: a car sitting across the mouth of
+ * Kesler Road is not a reason for anybody to leave the highway.
+ */
+export function convoyCorridor(world, route = world.route) {
+  const convoy = world.convoy;
+  if (!convoy) return null;
+  let min = (convoy.lateral ?? 0) - (convoy.halfWidth ?? 1.9);
+  let max = (convoy.lateral ?? 0) + (convoy.halfWidth ?? 1.9);
+
+  // The lane the units leapfrog up is shut for as long as the move is in the
+  // area, whether or not one happens to be in it this second. On a two-lane road
+  // that is the only oncoming lane there is, which is why oncoming traffic ends
+  // up on the shoulder there and merely one lane over in town.
+  if (route) {
+    const pass = route.laneOffsetAt(convoy.s, -1, 0);
+    min = Math.min(min, pass - 1.15);
+    max = Math.max(max, pass + 1.15);
+  }
+
+  for (const e of world.escorts ?? []) {
+    if (Math.abs(e.s - convoy.s) > 600) continue;
+    // A unit that is off the travelled way is not closing a lane -- it is parked
+    // across the mouth of a side road, or picking its way back onto the highway
+    // from one. Only what is actually on the pavement counts.
+    if (e.state === 'blocking') continue;
+    if (route && Math.abs(e.lateral) > route.edgeOffsetAt(e.s)) continue;
+    min = Math.min(min, e.lateral - e.width * 0.5);
+    max = Math.max(max, e.lateral + e.width * 0.5);
+  }
+  return { min: min - 0.5, max: max + 0.5 };
 }
 
 // Fallback for how far behind the load the escort formation reaches, used when
@@ -63,6 +108,11 @@ const CONVOY_TAIL = 450;
 // Far enough back that the stopped car is not sitting in the space the unit is
 // trying to move through.
 const MAINLINE_STOP_BACK = 35;
+
+/** Half the width of the intersection box, along the highway. */
+export function intersectionHalfLength(junction) {
+  return junction.signal ? 8.5 : 5.0;
+}
 
 /**
  * The point behind the load where the escort operation ends.
@@ -86,8 +136,8 @@ let nextId = 1;
  *
  * These are kinematic rather than fully simulated -- the player's rig is the
  * only vehicle worth spending a constraint solver on -- but they follow the
- * route properly, obey the escorts, and get out of the way of a load that is
- * wider than the lane it is travelling in.
+ * route properly, keep to a lane, stop at the lights, obey the escorts, and get
+ * out of the way of a load that is wider than the lane it is travelling in.
  */
 export class TrafficVehicle {
   constructor({ route, s, direction = 1, kind = 'car' }) {
@@ -98,15 +148,23 @@ export class TrafficVehicle {
 
     this.s = s;
     this.speed = 0;
-    this.desiredSpeed = (kind === 'truck' ? 24 : 29) * (0.85 + Math.random() * 0.3);
+    // Drivers are held to the posted limit rather than to one speed for the
+    // whole route, so the same car runs at 45 on the county highway and 35
+    // through town -- with its own opinion of the sign applied on top.
+    this.speedFactor = kind === 'truck'
+      ? 0.82 + Math.random() * 0.14
+      : 0.92 + Math.random() * 0.24;
 
-    // Lane centre offset. Right-hand traffic: with-convoy traffic sits right of
-    // the centreline, oncoming sits left of it (from the convoy's point of view).
-    this.laneOffset = direction > 0 ? route.laneWidth * 0.5 : -route.laneWidth * 0.5;
+    // Lane index, counting outward from the centreline. Most drivers sit in the
+    // kerb lane; a third of them use the inside lane, which is what puts anyone
+    // in the load's way on a road wide enough to have one.
+    this.insideLanePreference = Math.random() < 0.34;
+    this.lane = this.preferredLane(s);
+    this.laneOffset = route.laneOffsetAt(s, direction, this.lane);
     this.targetOffset = this.laneOffset;
     this.currentOffset = this.laneOffset;
 
-    this.state = 'driving';        // driving | queued | yielding | stopped | pulled-over
+    this.state = 'driving';        // driving | queued | yielding | stopped | pulled-over | light
     this.brakeLight = false;
     this.hazards = false;
     this.stoppedTimer = 0;
@@ -125,6 +183,21 @@ export class TrafficVehicle {
     this.heading = this.pose.heading;
   }
 
+  /** Cruising speed here, from the posted limit and this driver's opinion of it. */
+  cruiseSpeed(s = this.s) {
+    const limit = this.route.speedLimitAt(s) / 2.23694;
+    return Math.max(4, limit * this.speedFactor);
+  }
+
+  /** The lane this driver would choose here if nothing were in the way. */
+  preferredLane(s = this.s) {
+    const count = this.route.laneCountAt(s);
+    if (count <= 1) return 0;
+    // Trucks keep to the kerb lane whatever their driver would prefer.
+    if (this.kind === 'truck') return count - 1;
+    return this.insideLanePreference ? 0 : count - 1;
+  }
+
   updateTransform(dt = 0) {
     this.pose.update(dt, this.s, this.currentOffset, this.speed);
     this.heading = this.pose.heading;
@@ -138,7 +211,7 @@ export class TrafficVehicle {
    * the escorts need to get by in.
    */
   shoulderOffset(side) {
-    return side * (this.route.roadHalfWidth - this.width * 0.5 - 0.2);
+    return side * (this.route.halfWidthAt(this.s) - this.width * 0.5 - 0.2);
   }
 
   /** True if this vehicle and an occupied span of road share any lane space. */
@@ -147,18 +220,122 @@ export class TrafficVehicle {
       < obstacle.halfWidth + this.width * 0.5 + 0.35;
   }
 
+  /** True if a lane centre would leave this vehicle clear of the convoy's band. */
+  laneClearsCorridor(offset, corridor) {
+    if (!corridor) return true;
+    const half = this.width * 0.5;
+    return offset - half > corridor.max || offset + half < corridor.min;
+  }
+
+  /**
+   * Picks a lane, and reports whether the move it wants is safe to make.
+   *
+   * Three things decide it: the lane the driver would rather be in, whether the
+   * lane they are in still exists a few seconds up the road, and whether the
+   * convoy is using it. The last one is why this matters -- on the arterial an
+   * oncoming car that would have had to stop on the shoulder can simply move to
+   * the kerb lane and carry on.
+   */
+  chooseLane(world) {
+    const route = this.route;
+    const count = route.laneCountAt(this.s);
+    // A lane that ends up the road is not a lane you can stay in. The taper is
+    // signed well before it, which is what the look-ahead stands in for.
+    const ahead = this.s + this.direction * Math.max(70, this.speed * 5);
+    const surviving = Math.min(count, route.laneCountAt(ahead));
+
+    let lane = Math.min(this.lane, surviving - 1);
+    let want = Math.min(this.preferredLane(this.s), surviving - 1);
+
+    const corridor = world.corridor;
+    if (corridor && count > 1) {
+      const relevant = world.convoy
+        && Math.abs(world.convoy.s - this.s) < (this.direction < 0 ? 420 : 340);
+      if (relevant) {
+        // Take the outermost lane that keeps clear of the move. Only if none of
+        // them do does this become a shoulder job.
+        for (let i = surviving - 1; i >= 0; i--) {
+          if (this.laneClearsCorridor(route.laneOffsetAt(this.s, this.direction, i), corridor)) {
+            want = i;
+            break;
+          }
+        }
+      }
+    }
+
+    if (want !== lane) {
+      // One lane at a time, and only when the space beside is actually empty.
+      const step = Math.sign(want - lane);
+      if (this.laneChangeClear(lane + step, world)) lane += step;
+    }
+
+    this.lane = Math.max(0, lane);
+    return this.lane;
+  }
+
+  /** True if the lane beside this one has room to move into. */
+  laneChangeClear(lane, world) {
+    const offset = this.route.laneOffsetAt(this.s, this.direction, lane);
+    for (const other of world.neighbours ?? []) {
+      if (other === this || other.direction !== this.direction) continue;
+      if (Math.abs(other.currentOffset - offset) > (other.width + this.width) * 0.5 + 0.5) continue;
+      const along = (other.s - this.s) * this.direction;
+      // Room in front to pull into, and enough behind not to cut anybody up.
+      if (along < 14 && along > -10) return false;
+    }
+    for (const o of world.obstacles ?? []) {
+      if (Math.abs(o.lateral - offset) > o.halfWidth + this.width * 0.5 + 0.5) continue;
+      const front = (o.front - this.s) * this.direction;
+      const rear = (o.rear - this.s) * this.direction;
+      if (Math.min(front, rear) < 30 && Math.max(front, rear) > -20) return false;
+    }
+    return true;
+  }
+
   /**
    * @param leader  the vehicle ahead in this lane, or null
-   * @param world   { convoy, escorts, blockades, route }
+   * @param world   { convoy, escorts, blockades, signals, route }
    */
   update(dt, leader, world) {
-    let desired = this.desiredSpeed;
+    const route = this.route;
+    let desired = this.cruiseSpeed();
     let gap = Infinity;
     let closing = 0;
+
+    // Anything that has to be stopped short of is folded in as a stationary
+    // obstacle rather than by zeroing the desired speed, so the car brakes for
+    // it over a sensible distance instead of arriving at it and switching off.
+    const stopFor = (distance) => {
+      if (distance < gap) { gap = distance; closing = Math.max(0, this.speed); }
+    };
 
     if (leader) {
       gap = Math.abs(leader.s - this.s) * 1 - (leader.length + this.length) * 0.5;
       closing = this.speed - leader.speed;
+    }
+
+    // --- Lane choice --------------------------------------------------------
+    const lane = this.chooseLane(world);
+    this.laneOffset = route.laneOffsetAt(this.s, this.direction, lane);
+    this.targetOffset = this.laneOffset;
+
+    // --- Traffic signals ----------------------------------------------------
+    // A light the escorts have taken reads green, which is the whole reason the
+    // units take it: the queue in front of the load clears before it gets there.
+    const signal = world.signals?.next?.(this.s, this.direction) ?? null;
+    if (signal) {
+      const stopLine = (signal.s - this.s) * this.direction
+        - intersectionHalfLength(signal.junction) - 1.5 - this.length * 0.5;
+      const phase = signal.mainline;
+      if (stopLine > -2) {
+        // On yellow, stop if there is room to; if there is not, the car is
+        // already committed and going through is the safer of the two.
+        const canStop = stopLine > (this.speed * this.speed) / (2 * 2.6) + 1.5;
+        if (phase === Phase.RED || (phase === Phase.YELLOW && canStop)) {
+          stopFor(stopLine);
+          if (this.speed < 1.5) this.state = 'light';
+        }
+      }
     }
 
     // --- Obey the escorts ---------------------------------------------------
@@ -174,8 +351,7 @@ export class TrafficVehicle {
       if (!b.active || !b.holdsMainline) continue;
       const ahead = (b.s - this.s) * this.direction;
       if (ahead > 0 && ahead < 220) {
-        gap = Math.min(gap, ahead - MAINLINE_STOP_BACK);
-        desired = 0;
+        stopFor(ahead - MAINLINE_STOP_BACK);
         yielding = true;
       }
     }
@@ -199,7 +375,7 @@ export class TrafficVehicle {
       // unit running ahead to the next junction, most often. This is measured
       // against the lane rather than against where the car currently is, so
       // that pulling off does not make the reason to pull off disappear.
-      if (this.direction < 0
+      if (this.direction < 0 && !o.parked
         && Math.abs(o.lateral - this.laneOffset) < o.halfWidth + this.width * 0.5 + 0.35) {
         headOn = Math.min(headOn, g);
       }
@@ -215,40 +391,53 @@ export class TrafficVehicle {
     }
 
     // --- Get out of the way of the load ------------------------------------
-    // The load is wider than a lane. Oncoming traffic cannot pass it on the
-    // pavement, so it takes the shoulder and stops until the convoy is by.
+    // The load is wider than a lane. Where there is only one lane each way,
+    // oncoming traffic cannot pass it on the pavement at all, so it takes the
+    // shoulder and stops until the convoy is by. Where there are two, moving
+    // over one is enough and the traffic keeps rolling -- which is the whole
+    // difference between escorting a load down a county road and through town.
     const convoy = world.convoy;
     if (convoy) {
       const rel = (convoy.s - this.s) * this.direction;   // + = load is ahead of me
       const convoyLength = convoy.length ?? 27;
-
       const rearOfConvoy = world.convoyRear ?? (convoy.s - CONVOY_TAIL);
+      const laneWorks = this.laneClearsCorridor(this.laneOffset, world.corridor);
 
       if (this.direction < 0 && this.s > rearOfConvoy && rel < 320) {
-        // Oncoming and the convoy is coming: pull onto the shoulder and wait.
-        //
-        // The wait runs until the whole formation is past, not just the load.
-        // The escorts leapfrog by running up this lane -- it is closed for as
-        // long as the move is in the area, which is the point of the police
-        // units being there at all.
-        this.targetOffset = this.shoulderOffset(-1);
-        this.hazards = true;
-        if (rel < 190) { desired = 0; this.state = 'pulled-over'; }
+        if (laneWorks) {
+          // Room to keep going: hold the lane the lane chooser found, ease off,
+          // and let the move come past.
+          desired = Math.min(desired, this.cruiseSpeed() * 0.6);
+          this.hazards = false;
+          this.state = 'driving';
+        } else {
+          // Oncoming and the convoy is coming: pull onto the shoulder and wait.
+          //
+          // The wait runs until the whole formation is past, not just the load.
+          // The escorts leapfrog by running up this lane -- it is closed for as
+          // long as the move is in the area, which is the point of the police
+          // units being there at all.
+          this.targetOffset = this.shoulderOffset(-1);
+          this.hazards = true;
+          if (rel < 190) { desired = 0; this.state = 'pulled-over'; }
+        }
       } else if (this.direction > 0 && rel < 0 && rel > -(convoyLength + 40)) {
         // The load has caught this vehicle from behind, which should not happen
         // -- but if it does, ease right and let it by.
         this.targetOffset = this.shoulderOffset(1);
         this.hazards = true;
       } else if (this.direction > 0 && rel > 0 && rel < 420) {
-        // Coming up behind the convoy. Nothing gets past the rear escort, so
-        // traffic settles in behind it and runs at the load's speed. The rest
-        // of the spacing falls out of following the escort as a leader.
-        desired = Math.min(desired, Math.max(0, convoy.speed ?? 0));
-        this.targetOffset = this.laneOffset;
+        // Coming up behind the convoy. Nothing gets past the rear escorts -- on
+        // the arterial they run one lane each, so the queue forms in both.
+        //
+        // Traffic only matches the load's speed once it is actually up with the
+        // formation. Doing it the moment the load is in sight leaves a quarter
+        // mile of empty road behind an escorted move, when what should be back
+        // there is the queue everybody stuck behind it is sitting in.
+        if (rel < 220) desired = Math.min(desired, Math.max(0, convoy.speed ?? 0));
         this.hazards = false;
         this.state = 'queued';
       } else {
-        this.targetOffset = this.laneOffset;
         this.hazards = false;
         this.state = 'driving';
       }
@@ -262,13 +451,24 @@ export class TrafficVehicle {
     if (yielding && this.state !== 'pulled-over') this.state = 'yielding';
 
     // A unit coming up this lane the wrong way, lights going, is not something
-    // to stop dead in front of and wait: get right over and let it through.
+    // to stop dead in front of and wait: get out of its way and let it through.
+    // Where there is another lane that is enough; where there is not, that means
+    // the shoulder and a stop.
     if (headOn < 200) {
-      this.targetOffset = this.shoulderOffset(-1);
-      this.hazards = true;
-      if (headOn < 90) {
-        desired = 0;
-        if (this.state === 'driving' || this.state === 'queued') this.state = 'pulled-over';
+      const outerLane = route.laneCountAt(this.s) - 1;
+      const outer = route.laneOffsetAt(this.s, this.direction, outerLane);
+      const roomToMove = outerLane > lane && Math.abs(outer - this.laneOffset) > 1;
+      if (roomToMove) {
+        this.lane = outerLane;
+        this.laneOffset = outer;
+        this.targetOffset = outer;
+      } else {
+        this.targetOffset = this.shoulderOffset(-1);
+        this.hazards = true;
+        if (headOn < 90) {
+          desired = 0;
+          if (this.state === 'driving' || this.state === 'queued') this.state = 'pulled-over';
+        }
       }
     }
 
@@ -352,9 +552,22 @@ export class TrafficManager {
 
     const kind = Math.random() < 0.16 ? 'truck' : 'car';
     const v = new TrafficVehicle({ route, s, direction, kind });
-    v.speed = v.desiredSpeed * 0.9;
+    v.speed = v.cruiseSpeed() * 0.9;
     this.vehicles.push(v);
     return v;
+  }
+
+  /**
+   * How much traffic this stretch of road carries.
+   *
+   * A suburban arterial is busier than a county highway and much busier than a
+   * fire road over a ridge, and the difference is most of what makes the drive
+   * into town feel like arriving somewhere.
+   */
+  spawnInterval(s) {
+    const kind = this.route.kindAt(s);
+    const base = kind === 'suburban' ? 0.85 : kind === 'mountain' ? 2.6 : 1.4;
+    return base / Math.max(0.2, this.density);
   }
 
   update(dt, world) {
@@ -366,9 +579,13 @@ export class TrafficManager {
       return Math.abs(v.s - convoyS) < this.despawnWindow;
     });
 
+    const cap = this.route.kindAt(convoyS) === 'suburban'
+      ? Math.round(this.maxVehicles * 1.5)
+      : this.maxVehicles;
+
     this._spawnTimer -= dt;
-    if (this._spawnTimer <= 0 && this.vehicles.length < this.maxVehicles) {
-      this._spawnTimer = 1.4 / Math.max(0.2, this.density);
+    if (this._spawnTimer <= 0 && this.vehicles.length < cap) {
+      this._spawnTimer = this.spawnInterval(convoyS);
       this.spawn(convoyS, Math.random() < 0.55 ? -1 : 1);
     }
 
@@ -376,19 +593,39 @@ export class TrafficManager {
     const obstacles = world.obstacles ?? convoyObstacles(world);
     const frame = {
       ...world,
+      route: world.route ?? this.route,
+      // The lights are on the route, so a caller that did not pass them still
+      // gets traffic that stops at them.
+      signals: world.signals ?? this.route.signals ?? null,
       obstacles,
+      neighbours: this.vehicles,
+      corridor: world.corridor ?? convoyCorridor(world, this.route),
       convoyRear: world.convoyRear ?? convoyRear(obstacles, convoyS - CONVOY_TAIL),
     };
 
-    // Resolve leaders per direction so car-following works within each lane.
+    // Resolve leaders per direction. With more than one lane the vehicle ahead
+    // is not necessarily the vehicle to follow -- a car in the kerb lane is no
+    // reason for anybody in the inside lane to brake -- so the search walks
+    // forward until it finds one actually in the way.
     const lanes = { 1: [], '-1': [] };
     for (const v of this.vehicles) lanes[v.direction].push(v);
     for (const dir of [1, -1]) {
       const list = lanes[dir];
       list.sort((a, b) => (a.s - b.s) * dir);
       for (let i = 0; i < list.length; i++) {
-        list[i].update(dt, list[i + 1] ?? null, frame);
+        list[i].update(dt, findLeader(list, i), frame);
       }
     }
   }
+}
+
+/** The nearest vehicle ahead that shares lane space with this one. */
+function findLeader(list, i) {
+  const self = list[i];
+  for (let j = i + 1; j < list.length && j <= i + 6; j++) {
+    const other = list[j];
+    if (Math.abs(other.currentOffset - self.currentOffset)
+      < (other.width + self.width) * 0.5 + 0.3) return other;
+  }
+  return null;
 }

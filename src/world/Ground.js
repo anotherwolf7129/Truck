@@ -76,6 +76,12 @@ export class Ground {
    * Inside the paved width the road's own elevation wins outright. Outside it,
    * the road grade blends into the terrain over a cut-and-fill band so the
    * shoulder does not end in a cliff.
+   *
+   * Built-up ground gets a graded shelf first. A country road can run along the
+   * top of a fill with the ground falling away from the shoulder, but a street
+   * with footways, driveways and houses on it cannot -- everything within a
+   * couple of lot depths of the kerb was levelled when the place was built, and
+   * without that the whole town ends up pitched down a 45 degree bank.
    */
   heightAt(x, z) {
     const route = this.route;
@@ -83,22 +89,32 @@ export class Ground {
     const dist = Math.abs(_proj.lateral);
 
     const roadY = route.elevationAt(x, z, _proj);
-    const half = route.roadHalfWidth;
+    const half = route.halfWidthAt(_proj.s);
 
     if (dist <= half) return roadY;
 
-    const blend = 26; // metres of cut-and-fill either side
-    const t = Math.min(1, (dist - half) / blend);
+    const shelf = route.kindAt(_proj.s) === 'suburban' ? 46 : 0;
+    if (dist <= half + shelf) return roadY;
+
+    const blend = 26 + shelf;   // metres of cut-and-fill either side
+    const t = Math.min(1, (dist - half - shelf) / blend);
     const terrain = this.terrainHeight(x, z);
     // Smoothstep the transition and drop the verge slightly below the pavement.
     const k = t * t * (3 - 2 * t);
     return roadY * (1 - k) + (terrain - 0.35) * k;
   }
 
-  surfaceAt(dist) {
+  /**
+   * Which surface a point is on, from how far it sits off the centreline.
+   *
+   * Measured against the pavement at that arc length rather than a fixed width:
+   * the same four metres off centre is the middle of the inside lane in town and
+   * a wheel in the gravel on the ridge.
+   */
+  surfaceAt(dist, s) {
     const route = this.route;
-    if (dist <= route.laneWidth * 2) return 'asphalt';
-    if (dist <= route.roadHalfWidth) return 'shoulder';
+    if (dist <= route.edgeOffsetAt(s)) return 'asphalt';
+    if (dist <= route.halfWidthAt(s)) return 'shoulder';
     return 'dirt';
   }
 
@@ -116,7 +132,7 @@ export class Ground {
     n.set(-hx / (2 * e), 1, -hz / (2 * e)).normalize();
 
     this.route.project(x, z, _proj);
-    const surface = this.surfaceAt(Math.abs(_proj.lateral));
+    const surface = this.surfaceAt(Math.abs(_proj.lateral), _proj.s);
     let grip = this.surfaceGrip[surface];
     // Wet pavement loses far more grip than wet gravel does.
     grip *= 1 - this.wetness * (surface === 'asphalt' ? 0.32 : 0.18);

@@ -1,4 +1,6 @@
 import { Vector3, CatmullRomCurve3 } from 'three';
+import { Corridor } from './Corridor.js';
+import { SignalNetwork } from './Signal.js';
 
 const _a = new Vector3();
 const _b = new Vector3();
@@ -80,25 +82,60 @@ export class Route {
 
     this.laneWidth = 3.7;
     this.shoulderWidth = 2.4;
-    this.roadHalfWidth = this.laneWidth + this.shoulderWidth;
+
+    // --- Cross-section ------------------------------------------------------
+    // The route is four different roads. It leaves the yard on a two-lane county
+    // highway, narrows over the ridge, and comes into Cloverdale as a five-lane
+    // suburban arterial -- two lanes each way either side of a centre turn lane,
+    // with a signal every quarter mile. Nearly everything the other vehicles on
+    // the road do follows from which of those they are currently on.
+    this.corridor = new Corridor([
+      { s: 0, name: 'Bennett yard road', kind: 'industrial', lanes: 1, median: 0, shoulder: 2.6, limitMph: 30 },
+      { s: 320, name: 'County Highway 14', kind: 'rural', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45 },
+      { s: 3400, name: 'Ridge Road', kind: 'mountain', lanes: 1, median: 0, shoulder: 1.3, limitMph: 35 },
+      { s: 6400, name: 'Valley Road', kind: 'rural', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45 },
+      // The town line. The extra lane opens over a 140 m taper, which is why the
+      // pavement widens well before there is a second lane to drive in.
+      { s: 8180, name: 'Cloverdale Pike', kind: 'suburban', lanes: 2, median: 3.7, shoulder: 1.6, limitMph: 35, taper: 140 },
+      { s: 11400, name: 'Substation approach', kind: 'industrial', lanes: 1, median: 0, shoulder: 2.2, limitMph: 25, taper: 120 },
+    ], { laneWidth: this.laneWidth });
+
+    // Widest the road ever gets. Callers that need a single number -- spatial
+    // bucketing, the terrain skirt, how far off the road counts as lost -- use
+    // this; anything that cares where the pavement actually is asks for the
+    // width at an arc length instead.
+    this.roadHalfWidth = this.corridor.maxHalfWidth;
 
     this.buildSamples(2400);
 
     // --- Route features ----------------------------------------------------
-    // Side roads the escorts have to hold while the load goes through. `side`
-    // is which way the junction leaves the highway.
+    // Side roads the escorts have to hold while the load goes through. `side` is
+    // which way the junction leaves the highway; `crossing` marks a full
+    // four-way, which is a road going both ways rather than a road ending on
+    // this one. Signalised junctions are held by taking the light rather than by
+    // parking a unit across the mouth.
     this.junctions = [
       { s: 640, name: 'Kesler Road', side: -1 },
       { s: 1450, name: 'Old Mill Road', side: 1 },
-      { s: 2260, name: 'County Route 9', side: -1, signal: true },
+      { s: 2260, name: 'County Route 9', side: -1, signal: true, crossing: true },
       { s: 3080, name: 'Quarry Road', side: 1 },
       { s: 4380, name: 'Ridge Fire Road', side: -1 },
       { s: 6180, name: 'Harmon Pike', side: 1 },
-      { s: 7350, name: 'Valley Road', side: -1, signal: true },
-      { s: 8600, name: 'Beltline Connector', side: 1, signal: true },
+      { s: 7350, name: 'Valley Road', side: -1, signal: true, crossing: true },
+      // --- Cloverdale ------------------------------------------------------
+      { s: 8600, name: 'Beltline Connector', side: 1, signal: true, crossing: true },
+      { s: 9080, name: 'Maple Street', side: -1 },
+      { s: 9500, name: 'Fairview Drive', side: 1, signal: true, crossing: true },
       { s: 9900, name: 'Cement Plant Road', side: -1 },
+      { s: 10340, name: 'Sycamore Lane', side: 1 },
+      { s: 10760, name: 'Cloverdale Center', side: -1, signal: true, crossing: true },
       { s: 11250, name: 'Substation Access', side: 1 },
     ];
+
+    // The signal controllers. They live on the route because both the escorts
+    // and the ambient traffic have to read the same lights; the convoy manager
+    // is what ticks them, since holding a light is escort work.
+    this.signals = new SignalNetwork(this);
 
     // Posted vertical clearances. The lead pilot car carries a height pole set
     // just above the load; if the pole hits, the load would have hit.
@@ -201,6 +238,63 @@ export class Route {
     return out;
   }
 
+  // --- Cross-section -------------------------------------------------------
+  // Thin delegates onto the corridor, so callers ask the route where the road
+  // is rather than reaching through it.
+
+  /** Metres from the centreline to the outside edge of the paved shoulder. */
+  halfWidthAt(s) {
+    return this.corridor.halfWidth(s);
+  }
+
+  /** Metres from the centreline to the outside edge line. */
+  edgeOffsetAt(s) {
+    return this.corridor.edgeOffset(s);
+  }
+
+  /** Lanes in one direction of travel. */
+  laneCountAt(s) {
+    return this.corridor.laneCount(s);
+  }
+
+  /**
+   * Centre of a lane, metres right of the centreline. `index` counts outward
+   * from the middle of the road: 0 is the inside lane, `laneCountAt - 1` the
+   * kerb lane. `direction` is +1 with the convoy, -1 against it.
+   */
+  laneOffsetAt(s, direction, index) {
+    return this.corridor.laneOffset(s, direction, index);
+  }
+
+  /**
+   * The lane the permit routes the load down.
+   *
+   * The inside lane, always. On the two-lane sections that is the only lane
+   * there is; through town it is the one against the centre turn lane, which
+   * leaves the load with the emptiest thing on the road either side of it and
+   * puts the kerb lane -- the one with the driveways, the parked cars and the
+   * right turns on it -- on the far side of an escort rather than beside the
+   * load.
+   */
+  convoyLaneOffset(s) {
+    return this.corridor.laneOffset(s, 1, 0);
+  }
+
+  /** Width of the centre area between the two inside lanes. */
+  medianAt(s) {
+    return this.corridor.median(s);
+  }
+
+  /** Posted speed limit, mph. */
+  speedLimitAt(s) {
+    return this.corridor.limitMph(s);
+  }
+
+  /** What kind of road this is: rural, mountain, suburban or industrial. */
+  kindAt(s) {
+    return this.corridor.kind(s);
+  }
+
   /**
    * Projects a world position onto the route.
    * @returns { s, lateral, distance } where `lateral` is signed metres right of
@@ -250,7 +344,7 @@ export class Route {
    */
   elevationAt(x, z, projection = null) {
     const proj = projection ?? this.project(x, z);
-    const camber = -Math.min(Math.abs(proj.lateral), this.roadHalfWidth) * 0.02;
+    const camber = -Math.min(Math.abs(proj.lateral), this.halfWidthAt(proj.s)) * 0.02;
     return this.elevationAtS(proj.s) + camber;
   }
 
@@ -270,6 +364,12 @@ export class Route {
   /** The next junction ahead of arc length `s`, or null. */
   nextJunction(s) {
     for (const j of this.junctions) if (j.s > s) return j;
+    return null;
+  }
+
+  /** The next signalised junction ahead of arc length `s`, or null. */
+  nextSignal(s) {
+    for (const j of this.junctions) if (j.s > s && j.signal) return j;
     return null;
   }
 
@@ -322,7 +422,9 @@ export class Route {
    * posted advisory. This is what the lead pilot car calls back over the radio.
    */
   advisorySpeedAt(s) {
-    let mph = 45;
+    // Never above the posted limit, which is the only number on this route the
+    // load shares with everybody else on it.
+    let mph = this.speedLimitAt(s);
     const k = this.curvatureAt(s);
     if (k > 1e-4) {
       // Hold the load to about 0.15 g laterally, well inside its roll limit.

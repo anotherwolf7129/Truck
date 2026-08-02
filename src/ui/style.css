@@ -199,6 +199,31 @@ html, body {
 }
 .risk .value { font-family: var(--mono); font-size: 13px; font-weight: 600; }
 .risk .value.warn { color: var(--warn); }
+.risk .value.critical { color: var(--critical); }
+.risk .value.ok { color: var(--ok); }
+
+/* A speed limit sign, drawn the way the one at the roadside is. */
+.limit-sign {
+  text-align: center;
+  background: #eceef1;
+  color: #12161b;
+  border: 2px solid #12161b;
+  border-radius: 3px;
+  padding: 3px 8px 4px;
+  line-height: 1;
+}
+.limit-sign .label {
+  font-size: 7.5px;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+#limit {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 2px;
+}
 
 #indicators { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
 .lamp {

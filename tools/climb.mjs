@@ -6,7 +6,7 @@ import { Ground } from '../src/world/Ground.js';
 const route=new Route(), ground=new Ground(route);
 const rig=new Rig({cargo:{name:'t',mass:68000,size:new Vector3(3.66,3.60,8.40),centerHeight:2.35}});
 const s0=3250;
-rig.placeAt(route.positionAt(s0, route.laneWidth*0.5, new Vector3()), route.headingAt(s0), ground);
+rig.placeAt(route.positionAt(s0, route.convoyLaneOffset(s0), new Vector3()), route.headingAt(s0), ground);
 rig.air.psi=120; rig.air.parkingBrake=false;
 const dt=1/200;
 // start at 10 mph in a low gear
@@ -24,7 +24,7 @@ for(let i=0;i<200*40;i++){
   // hold the lane
   {
     const p=rig.tractor.body.position; const pr=route.project(p.x,p.z);
-    const aim=route.positionAt(pr.s+Math.max(18,Math.abs(rig.speedMph)*1.5), route.laneWidth*0.5, new Vector3());
+    const aim=route.positionAt(pr.s+Math.max(18,Math.abs(rig.speedMph)*1.5), route.convoyLaneOffset(pr.s), new Vector3());
     const fwd=rig.tractor.body.localToWorldDir(new Vector3(0,0,1),new Vector3());
     const right=rig.tractor.body.localToWorldDir(new Vector3(1,0,0),new Vector3());
     const toAim=aim.sub(p);

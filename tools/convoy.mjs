@@ -31,7 +31,13 @@ for (let i = 0; i < 30*60*60; i++) {   // up to an hour
   for (const b of convoy.blockades) {
     if (!seen.has(b.name) && s > b.s - 5) {
       seen.add(b.name);
-      if (b.active) { blockedInTime++; console.log(`  OK   ${b.name.padEnd(22)} blocked before load arrived (unit held it, ${b.queue.length} cars waiting)`); }
+      if (b.active) {
+        blockedInTime++;
+        const held = b.signalised
+          ? `unit has the light, ${b.cross?.vehicles.length ?? 0} on the cross street`
+          : `unit held it, ${b.queue.length} cars waiting`;
+        console.log(`  OK   ${b.name.padEnd(22)} blocked before load arrived (${held})`);
+      }
       else { missed++; console.log(`  MISS ${b.name.padEnd(22)} NOT blocked when load arrived`); }
     }
   }

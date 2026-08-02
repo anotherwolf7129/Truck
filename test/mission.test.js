@@ -33,7 +33,7 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
 
   const startS = route.staging.s;
   rig.placeAt(
-    route.positionAt(startS, route.laneWidth * 0.5, new Vector3()),
+    route.positionAt(startS, route.convoyLaneOffset(startS), new Vector3()),
     route.headingAt(startS),
     ground
   );
@@ -76,9 +76,10 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
     rig.powertrain.engineBrakeStage = useEngineBrake && grade < -0.03 ? 3 : 0;
     if (useEngineBrake && grade < -0.03) rig.brake = Math.min(rig.brake, 0.25);
 
-    // Steer toward a point up the road in the middle of the lane.
+    // Steer toward a point up the road in the middle of the permitted lane --
+    // which through town is the inside one, on the far side of the turn lane.
     const aimS = s + Math.max(18, Math.abs(rig.speedMph) * 1.5);
-    const aim = route.positionAt(aimS, route.laneWidth * 0.5, new Vector3());
+    const aim = route.positionAt(aimS, route.convoyLaneOffset(aimS), new Vector3());
     const fwd = rig.tractor.body.localToWorldDir(new Vector3(0, 0, 1), new Vector3());
     const right = rig.tractor.body.localToWorldDir(new Vector3(1, 0, 0), new Vector3());
     const toAim = aim.sub(p);
@@ -89,9 +90,14 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
     rig.step(dt, ground);
 
     const speed = rig.tractor.forwardSpeed;
-    convoy.update(dt, s, speed, loadHeight);
+    convoy.update(dt, s, speed, loadHeight, {
+      lateral: proj.lateral,
+      halfWidth: rig.cargo.size.x * 0.5,
+      length: 27,
+    });
     traffic.update(dt, {
-      convoy: { s, speed, length: 27 },
+      convoy: { s, speed, lateral: proj.lateral, halfWidth: rig.cargo.size.x * 0.5, length: 27 },
+      escorts: convoy.vehicles,
       blockades: convoy.blockades,
       route,
     });
@@ -126,7 +132,7 @@ test('the load stays upright and the rig never jackknifes', () => {
 });
 
 test('stays inside the permitted corridor', () => {
-  console.log(`  max lateral excursion ${mission.maxOffRoute.toFixed(1)} m from centreline`);
+  console.log(`  max lateral excursion ${mission.maxOffRoute.toFixed(1)} m from the permitted lane`);
   assert.ok(mission.maxOffRoute < 8, `wandered ${mission.maxOffRoute.toFixed(1)} m off centre`);
 });
 
@@ -144,6 +150,18 @@ test('escorts block every junction before the load arrives', () => {
   );
   assert.deepStrictEqual(mission.junctionsMissed, []);
   assert.ok(mission.junctionsBlocked >= 8, `only ${mission.junctionsBlocked} junctions blocked`);
+});
+
+test('a unit has the light at every signal on the route', () => {
+  // The reason a unit runs ahead to a signalised junction is that the load must
+  // never meet a red. Stopping 212,000 lb at a light is not a delay, it is a
+  // standing start on whatever grade the light happens to be on.
+  console.log(
+    `  ${mission.signalsHeld} signals green` +
+    (mission.signalsRun.length ? `, RAN: ${mission.signalsRun.join(', ')}` : '')
+  );
+  assert.ok(mission.signalsHeld >= 4, `only ${mission.signalsHeld} signals were green for the load`);
+  assert.deepStrictEqual(mission.signalsRun, []);
 });
 
 test('air pressure survives the descent', () => {
