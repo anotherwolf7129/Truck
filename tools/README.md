@@ -12,6 +12,8 @@ Headless (plain `node tools/<name>.mjs`, no browser needed):
 | `climb.mjs` | Holds the rig on the 7% grade and reports tractive force, slip and gearing. This is the harness that exposed the missing reflected driveline inertia. |
 | `convoy.mjs` | Runs the escorts along the whole route and checks every junction is blocked before the load arrives. |
 | `offtrack.mjs` | Fits the steady-state circle on a tight corner and reports how much of the swept path the lowboy's rear steer actually saves. |
+| `survey.mjs` | Walks the centreline and reports every corner on it — how far round, at what radius, at what advisory speed — plus the grades and where every junction, bridge and flagged corner actually landed. This is how the route is designed; a road you cannot measure the corners of is how it came to have three of them. |
+| `perf.mjs` | Cost of the simulation per frame, broken down into physics, route queries, convoy and traffic. No browser: this is the part that runs on the main thread whatever the GPU is doing. |
 
 Browser (need `npm i -D playwright` and a Chromium; set `CHROME_PATH` if it is
 not on the default search path, and have `npm run dev` running):
@@ -22,5 +24,6 @@ not on the default search path, and have `npm run dev` running):
 | `probe.mjs` | Per-wheel loads, compressions and lighting state from the running page. |
 | `tour.mjs` | Jumps the convoy to each notable point on the route and screenshots it. |
 | `side.mjs <out.png> [s]` | Plan view rotated so the direction of travel is up the screen, which is the quickest way to see which side of the road the load is actually on. |
+| `frame.mjs` | Draw calls, triangles, shader programs and frame times at each notable point on the route. Run under software rasterisation the frame times mean nothing, but the draw calls and triangles are what they will be on real hardware. |
 
 Screenshots land in `shots/`, which is gitignored.

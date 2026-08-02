@@ -74,6 +74,19 @@ function makeAsphaltTexture() {
 const CHUNK = 320;
 
 /**
+ * How far out each kind of detail is worth drawing, in metres.
+ *
+ * A tree two kilometres down the road is inside the frustum, is a couple of
+ * pixels tall, and is most of the way to the fog colour already -- so the
+ * frustum test alone keeps far too much alive once the draw distance is long
+ * enough to show the country the route runs through. Anything with a range
+ * switches off past it; the coarse terrain that makes the horizon does not have
+ * one, because it is what is left to look at.
+ */
+const TREE_RANGE = 1700;
+const DETAIL_RANGE = 950;
+
+/**
  * Instances of one geometry, bucketed along the route so they can be culled.
  *
  * Collects matrices while the world is being built and emits one InstancedMesh
@@ -98,7 +111,7 @@ class InstanceSet {
   }
 
   /** Emits the meshes. Returns them so the caller can keep a handle if it wants. */
-  build(parent) {
+  build(parent, ranged = null, range = 0) {
     const out = [];
     for (const bucket of this.buckets.values()) {
       const mesh = new InstancedMesh(this.geometry, this.material, bucket.length);
@@ -113,6 +126,7 @@ class InstanceSet {
       mesh.computeBoundingSphere();
       parent.add(mesh);
       out.push(mesh);
+      if (ranged) ranged.push({ mesh, sphere: mesh.boundingSphere, range });
     }
     return out;
   }
@@ -183,7 +197,7 @@ class PaintSet {
     c.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
 
-  build(parent) {
+  build(parent, ranged = null, range = 0) {
     // Paint sits on the road, not above it, so it is pushed toward the camera in
     // depth rather than lifted into the air where it would shadow oddly and
     // float at a distance.
@@ -198,7 +212,10 @@ class PaintSet {
       geo.setAttribute('position', new BufferAttribute(new Float32Array(c.positions), 3));
       geo.setIndex(c.indices);
       geo.computeVertexNormals();
-      parent.add(new Mesh(geo, mat));
+      geo.computeBoundingSphere();
+      const mesh = new Mesh(geo, mat);
+      parent.add(mesh);
+      if (ranged) ranged.push({ mesh, sphere: geo.boundingSphere, range });
     }
   }
 }
@@ -224,8 +241,16 @@ export class WorldMesh {
       yellow: new PaintSet(0xd8b422),
     };
 
+    // Chunks that are cheap to draw but pointless at a distance -- trees,
+    // houses, street furniture, lane paint -- carry their own range and are
+    // switched off beyond it. The frustum test alone cannot do this: a tree two
+    // kilometres down the road is in front of the camera, it is just not worth
+    // anything once the haze has taken it.
+    this.ranged = [];
+
     this.buildRoad();
     this.buildMarkings();
+    this.buildDistantTerrain();
     this.buildTerrain();
     this.buildScenery();
     this.buildTown();
@@ -353,8 +378,10 @@ export class WorldMesh {
   /** Emits the accumulated paint, chunk by chunk. */
   buildPaint() {
     this.markings = new Group();
-    this.paint.white.build(this.markings);
-    this.paint.yellow.build(this.markings);
+    // Lane paint is a few centimetres wide. Past a kilometre it is under a pixel
+    // and well inside the haze, so it stops being drawn.
+    this.paint.white.build(this.markings, this.ranged, 1100);
+    this.paint.yellow.build(this.markings, this.ranged, 1100);
     this.group.add(this.markings);
   }
 
@@ -433,6 +460,126 @@ export class WorldMesh {
   }
 
   /**
+   * The country the route runs through, out to the horizon.
+   *
+   * Without this the world simply stopped: the terrain was a band 260 m either
+   * side of the road and beyond it was sky, so every view ended in a cliff edge
+   * with nothing behind it. That is most of why the map read as empty -- there
+   * was no landscape, only a strip of verge.
+   *
+   * It is a coarse grid over the whole area at two hundred metres a cell, which
+   * is fine enough for the broad component of the terrain function -- the one
+   * with a six-hundred-metre wavelength that makes the hills -- and cheap enough
+   * that the whole horizon is a few thousand triangles. The detail near the road
+   * is the fine band's job.
+   *
+   * Near the route the grid is pressed down, so it can never poke up through the
+   * band that is drawn on top of it; and the band's outer edge is blended onto
+   * this surface exactly, so the two meet without a seam.
+   */
+  buildDistantTerrain() {
+    const route = this.route;
+    const step = 200;
+    const margin = 6400;
+
+    let minX = Infinity; let maxX = -Infinity;
+    let minZ = Infinity; let maxZ = -Infinity;
+    for (const s of route.samples) {
+      minX = Math.min(minX, s.position.x); maxX = Math.max(maxX, s.position.x);
+      minZ = Math.min(minZ, s.position.z); maxZ = Math.max(maxZ, s.position.z);
+    }
+    const x0 = Math.floor((minX - margin) / step) * step;
+    const z0 = Math.floor((minZ - margin) / step) * step;
+    const nx = Math.ceil((maxX + margin - x0) / step) + 1;
+    const nz = Math.ceil((maxZ + margin - z0) / step) + 1;
+
+    const heights = new Float32Array(nx * nz);
+    const proj = {};
+    for (let i = 0; i < nx; i++) {
+      for (let k = 0; k < nz; k++) {
+        const x = x0 + i * step;
+        const z = z0 + k * step;
+        route.project(x, z, proj);
+        // Pressed down where the fine band will cover it, easing back to the
+        // true surface by the time the band's outer edge arrives.
+        const t = Math.min(1, proj.distance / 240);
+        const sink = 9 * (1 - t * t * (3 - 2 * t));
+        heights[i * nz + k] = this.ground.terrainHeight(x, z) - 0.35 - sink;
+      }
+    }
+    this.distant = { x0, z0, step, nx, nz, heights };
+
+    // --- Meshes, in blocks so they cull ------------------------------------
+    const block = 8;
+    const grass = new Color(0x5f7a3e);
+    const dry = new Color(0x8e8551);
+    const rock = new Color(0x6f6a61);
+    const tmp = new Color();
+    const mat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.98, metalness: 0 });
+    this.distantMeshes = [];
+
+    for (let bi = 0; bi < nx - 1; bi += block) {
+      for (let bk = 0; bk < nz - 1; bk += block) {
+        const iTo = Math.min(nx - 1, bi + block);
+        const kTo = Math.min(nz - 1, bk + block);
+        const positions = [];
+        const colors = [];
+        const indices = [];
+        const w = kTo - bk + 1;
+
+        for (let i = bi; i <= iTo; i++) {
+          for (let k = bk; k <= kTo; k++) {
+            const x = x0 + i * step;
+            const z = z0 + k * step;
+            const h = heights[i * nz + k];
+            positions.push(x, h, z);
+            const east = heights[Math.min(nx - 1, i + 1) * nz + k];
+            const slope = Math.min(1, Math.abs(east - h) / 40);
+            const patch = this.ground.patchNoise(x, z);
+            tmp.copy(grass).lerp(dry, Math.min(1, Math.max(0, (h - 40) / 120)));
+            tmp.lerp(dry, Math.max(0, (patch - 0.45) * 1.5));
+            tmp.lerp(rock, slope * 0.8);
+            tmp.multiplyScalar(0.86 + patch * 0.28);
+            colors.push(tmp.r, tmp.g, tmp.b);
+          }
+        }
+        for (let i = 0; i < iTo - bi; i++) {
+          for (let k = 0; k < kTo - bk; k++) {
+            const a = i * w + k;
+            indices.push(a, a + 1, a + w, a + 1, a + w + 1, a + w);
+          }
+        }
+
+        const geo = new BufferGeometry();
+        geo.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+        geo.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
+        geo.setIndex(indices);
+        geo.computeVertexNormals();
+        const mesh = new Mesh(geo, mat);
+        this.group.add(mesh);
+        this.distantMeshes.push(mesh);
+      }
+    }
+  }
+
+  /** The distant surface at a point, interpolated across its grid. */
+  distantHeightAt(x, z) {
+    const d = this.distant;
+    const fi = Math.max(0, Math.min(d.nx - 1, (x - d.x0) / d.step));
+    const fk = Math.max(0, Math.min(d.nz - 1, (z - d.z0) / d.step));
+    const i0 = Math.min(d.nx - 2, Math.floor(fi));
+    const k0 = Math.min(d.nz - 2, Math.floor(fk));
+    const tx = fi - i0;
+    const tz = fk - k0;
+    const h = d.heights;
+    const h00 = h[i0 * d.nz + k0];
+    const h10 = h[(i0 + 1) * d.nz + k0];
+    const h01 = h[i0 * d.nz + k0 + 1];
+    const h11 = h[(i0 + 1) * d.nz + k0 + 1];
+    return (h00 * (1 - tx) + h10 * tx) * (1 - tz) + (h01 * (1 - tx) + h11 * tx) * tz;
+  }
+
+  /**
    * Terrain around the corridor.
    *
    * Sampled from the same height function the physics uses, so what you see is
@@ -447,8 +594,11 @@ export class WorldMesh {
     // several kilometres away and behind the haze. The spacing is non-linear
     // across the band, so the detail that was lost is all in the distance.
     const along = 16;
-    const lanes = 14;
-    const maxLateral = 260;
+    const lanes = 16;
+    // Wide enough to carry the cut and fill. A road crossing a valley fifty
+    // metres deep is on an embankment hundreds of metres across, and the band
+    // has to reach far enough out to show it landing.
+    const maxLateral = 420;
     const perChunk = Math.max(2, Math.round(CHUNK / along));
     const count = Math.floor(route.length / along);
 
@@ -500,15 +650,27 @@ export class WorldMesh {
         const offset = inner + Math.pow(t, 2.1) * (maxLateral - inner);
         const lateral = side * offset;
         _p.copy(sample.position).addScaledVector(sample.lateral, lateral);
-        const h = this.ground.heightAt(_p.x, _p.z);
+        let h = this.ground.heightAt(_p.x, _p.z);
+        // The last fifth of the band is faded onto the distant grid, reaching it
+        // exactly at the outer edge. Both surfaces come from the same height
+        // function but at very different resolutions, so butting them together
+        // would leave the coarse one cutting through the fine one; blending
+        // means the join is continuous wherever it falls.
+        if (t > 0.8) {
+          const blend = (t - 0.8) / 0.2;
+          h += (this.distantHeightAt(_p.x, _p.z) - h) * blend * blend * (3 - 2 * blend);
+        }
         positions.push(_p.x, h, _p.z);
         normals.push(0, 1, 0);
 
-        // Tint by slope and elevation so the ridge reads differently from the
-        // valley floor.
+        // Tint by slope, elevation and field, so the ridge reads differently
+        // from the valley floor and the valley floor is not one flat green.
         const slope = Math.min(1, Math.abs(this.ground.heightAt(_p.x + 6, _p.z) - h) / 6);
-        tmp.copy(grass).lerp(dry, Math.min(1, Math.max(0, (h - 20) / 90)));
+        const patch = this.ground.patchNoise(_p.x, _p.z);
+        tmp.copy(grass).lerp(dry, Math.min(1, Math.max(0, (h - 40) / 120)));
+        tmp.lerp(dry, Math.max(0, (patch - 0.45) * 1.5));
         tmp.lerp(rock, slope * 0.75);
+        tmp.multiplyScalar(0.86 + patch * 0.28);
         colors.push(tmp.r, tmp.g, tmp.b);
       }
       if (i < count) {
@@ -593,8 +755,8 @@ export class WorldMesh {
       crowns.push(s, _dummy.matrix);
       placed++;
     }
-    trunks.build(this.group);
-    crowns.build(this.group);
+    trunks.build(this.group, this.ranged, TREE_RANGE);
+    crowns.build(this.group, this.ranged, TREE_RANGE);
 
     // --- Guardrail on the downhill side of the grade -----------------------
     const railMat = new MeshStandardMaterial({ color: 0x9aa0a6, metalness: 0.8, roughness: 0.4 });
@@ -625,8 +787,8 @@ export class WorldMesh {
         posts.push(s, _dummy.matrix);
       }
     }
-    rails.build(this.group);
-    posts.build(this.group);
+    rails.build(this.group, this.ranged, DETAIL_RANGE);
+    posts.build(this.group, this.ranged, DETAIL_RANGE);
 
     // --- Power lines, which the route is delivering a transformer to -------
     const poleMat = new MeshStandardMaterial({ color: 0x6b5844, roughness: 0.95 });
@@ -649,8 +811,8 @@ export class WorldMesh {
       _dummy.updateMatrix();
       arms.push(s, _dummy.matrix);
     }
-    poles.build(this.group);
-    arms.build(this.group);
+    poles.build(this.group, this.ranged, TREE_RANGE);
+    arms.build(this.group, this.ranged, DETAIL_RANGE);
   }
 
   // ---------------------------------------------------------------------------
@@ -798,7 +960,9 @@ export class WorldMesh {
       posts.push(lot.s, _dummy.matrix);
     });
 
-    for (const set of [walls, roofs, drives, boxes, posts]) set.build(this.group);
+    walls.build(this.group, this.ranged, TREE_RANGE);
+    roofs.build(this.group, this.ranged, TREE_RANGE);
+    for (const set of [drives, boxes, posts]) set.build(this.group, this.ranged, DETAIL_RANGE);
 
     // --- Street lighting ----------------------------------------------------
     const lightPoleGeo = new CylinderGeometry(0.11, 0.15, 8.4, 8);
@@ -844,7 +1008,7 @@ export class WorldMesh {
       _dummy.updateMatrix();
       lightHeads.push(st.s, _dummy.matrix);
     });
-    for (const set of [lightPoles, lightArms, lightHeads]) set.build(this.group);
+    for (const set of [lightPoles, lightArms, lightHeads]) set.build(this.group, this.ranged, DETAIL_RANGE);
   }
 
   /**
@@ -1216,6 +1380,24 @@ export class WorldMesh {
     }
 
     for (const geo of [bodyGeo, visorGeo, mastGeo, postGeo]) geo.dispose();
+  }
+
+  /**
+   * Switches off the chunks of detail that are too far away to be worth drawing.
+   *
+   * Measured to the near edge of each chunk's bounding sphere rather than its
+   * centre, so a chunk half of which is in range stays on and there is no edge
+   * for a tree to pop across as you drive down it.
+   */
+  updateVisibility(cameraPosition) {
+    for (const entry of this.ranged) {
+      const c = entry.sphere.center;
+      const dx = c.x - cameraPosition.x;
+      const dy = c.y - cameraPosition.y;
+      const dz = c.z - cameraPosition.z;
+      const near = Math.sqrt(dx * dx + dy * dy + dz * dz) - entry.sphere.radius;
+      entry.mesh.visible = near < entry.range;
+    }
   }
 
   /** Pushes the controller states onto the lenses. */

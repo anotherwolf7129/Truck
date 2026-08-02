@@ -11,13 +11,12 @@
  */
 import { chromium } from 'playwright';
 
-const AT = [
-  ['yard', 60],
-  ['county highway', 1500],
-  ['switchback', 4840],
-  ['grade', 5600],
-  ['town', 9600],
-];
+/**
+ * Where to measure. Taken from the route's own survey marks rather than written
+ * down as numbers, so moving a corner does not silently move the measurement
+ * somewhere else on the road.
+ */
+const WHERE = ['onto CH14', 'CH14 settled', 'CR9 turn', 'switchback', 'grade bottom', 'town line', 'Fairview Drive'];
 
 const browser = await chromium.launch({
   ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
@@ -29,6 +28,9 @@ await page.goto('http://127.0.0.1:5173/', { waitUntil: 'networkidle', timeout: 6
 await page.waitForTimeout(2000);
 await (await page.$('#start-button')).click();
 await page.waitForTimeout(3000);
+
+const AT = await page.evaluate((names) =>
+  names.map((n) => [n, window.game.route.survey.at(n)]), WHERE);
 
 console.log('where            calls    tris   progs   objects   frame ms');
 for (const [name, s] of AT) {

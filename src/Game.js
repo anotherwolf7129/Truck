@@ -736,6 +736,7 @@ export class Game {
     this.syncBlockades();
     this.worldMesh.updateSignals(this.route.signals);
     this.updateCamera(dt);
+    this.worldMesh.updateVisibility(this.render.camera.position);
 
     this.render.update(this.rig.tractor.body.position);
     this.audio.update(dt, this.rig);

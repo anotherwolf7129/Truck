@@ -76,33 +76,47 @@ export class Corridor {
     const i = this.indexAt(s);
     const cur = this.sections[i];
 
-    let other = null;
-    let t = 0;
-
-    const next = this.sections[i + 1];
-    if (next) {
-      const half = (next.taper ?? TAPER) * 0.5;
-      if (s > next.s - half) {
-        other = next;
-        t = smoothstep((s - (next.s - half)) / (half * 2));
-      }
-    }
-    if (!other && i > 0) {
+    // Both boundaries are considered, not just the nearer one. A section only a
+    // couple of hundred metres long -- which is what turn widening is, a wider
+    // shoulder either side of a corner -- has a taper running off each end, and
+    // dropping the one behind you the moment the one ahead starts leaves a step
+    // in the pavement edge where the two overlap.
+    let prev = null;
+    let tPrev = 0;
+    if (i > 0) {
       const half = (cur.taper ?? TAPER) * 0.5;
       if (s < cur.s + half) {
-        other = this.sections[i - 1];
-        t = smoothstep((cur.s + half - s) / (half * 2));
+        prev = this.sections[i - 1];
+        tPrev = smoothstep((cur.s + half - s) / (half * 2));
       }
     }
 
-    const mix = (key) => (other ? cur[key] + (other[key] - cur[key]) * t : cur[key]);
+    let next = null;
+    let tNext = 0;
+    const ahead = this.sections[i + 1];
+    if (ahead) {
+      const half = (ahead.taper ?? TAPER) * 0.5;
+      if (s > ahead.s - half) {
+        next = ahead;
+        tNext = smoothstep((s - (ahead.s - half)) / (half * 2));
+      }
+    }
+
+    const mix = (key) => {
+      let v = cur[key];
+      if (prev) v += (prev[key] - v) * tPrev;
+      if (next) v += (next[key] - v) * tNext;
+      return v;
+    };
     out.lanes = mix('lanes');
     out.median = mix('median');
     out.shoulder = mix('shoulder');
 
     // Posted limits and the kind of place this is do not blend -- a sign either
     // applies or it does not. Whichever section the point is mostly in wins.
-    const dominant = other && t > 0.5 ? other : cur;
+    let dominant = cur;
+    if (tPrev > 0.5 && tPrev >= tNext) dominant = prev;
+    else if (tNext > 0.5) dominant = next;
     out.limitMph = dominant.limitMph;
     out.kind = dominant.kind;
     out.name = dominant.name;

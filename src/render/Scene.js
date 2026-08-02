@@ -43,12 +43,12 @@ export class RenderContext {
     this.renderer.shadowMap.type = PCFSoftShadowMap;
 
     this.scene = new Scene();
-    // The far plane used to be six kilometres, which on a route twelve
-    // kilometres long meant most of the world was inside the frustum most of the
-    // time -- the town was being drawn from seven kilometres away, through fog
-    // that had already faded it to a flat grey. Three kilometres is past
-    // anything the haze leaves visible.
-    this.camera = new PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.25, 3200);
+    // Far enough to see the country the route runs through. What used to make a
+    // long draw distance expensive was that everything on the route was inside
+    // it -- every tree, house and painted line, at any range. Those carry their
+    // own cull distance now, so what is left out here is the coarse terrain that
+    // makes the horizon, which is a few thousand triangles.
+    this.camera = new PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.25, 9000);
 
     // --- Sky ---------------------------------------------------------------
     // Preetham atmospheric scattering. It also feeds the reflection probe, so
@@ -91,7 +91,7 @@ export class RenderContext {
     // reaches full density short of the far plane, so nothing ever pops out of
     // existence at the edge of the frustum -- it has already gone to haze.
     this.fogColor = new Color(0xa8bdd4);
-    this.scene.fog = new Fog(this.fogColor, 600, 2900);
+    this.scene.fog = new Fog(this.fogColor, 700, 7000);
 
     this.setTimeOfDay(9.5);
 

@@ -25,20 +25,33 @@ test('the route is more than one road', () => {
   assert.ok(kinds.size >= 3, 'the whole route is the same kind of road');
 });
 
+/** The middle of the section the corridor calls by this name. */
+function midOf(kind) {
+  const sections = route.corridor.sections;
+  const i = sections.findIndex((sec) => sec.kind === kind);
+  assert.ok(i >= 0, `no ${kind} section on the route`);
+  const end = sections[i + 1] ? sections[i + 1].s : route.length;
+  return (sections[i].s + end) / 2;
+}
+
 test('the town has two lanes each way and a turn lane between them', () => {
-  const townS = 9700;
+  const townS = midOf('suburban');
   assert.strictEqual(route.kindAt(townS), 'suburban');
   assert.strictEqual(route.laneCountAt(townS), 2);
   assert.ok(route.medianAt(townS) > 3, 'no centre turn lane through town');
 
   // The county road is what it always was.
-  assert.strictEqual(route.laneCountAt(1000), 1);
-  assert.strictEqual(route.medianAt(1000), 0);
-  assert.strictEqual(route.convoyLaneOffset(1000).toFixed(2), (route.laneWidth * 0.5).toFixed(2));
+  const ruralS = midOf('rural');
+  assert.strictEqual(route.laneCountAt(ruralS), 1);
+  assert.strictEqual(route.medianAt(ruralS), 0);
+  assert.strictEqual(route.convoyLaneOffset(ruralS).toFixed(2), (route.laneWidth * 0.5).toFixed(2));
 });
 
 test('lanes are laid out side by side without overlapping', () => {
-  for (const s of [1000, 5000, 9700, 11000]) {
+  // Every station on the route rather than a handful of remembered ones: the
+  // cross-section changes at a dozen places now, and half of them are the turn
+  // widening either side of a corner.
+  for (let s = 0; s <= route.length; s += 25) {
     const count = route.laneCountAt(s);
     const edge = route.edgeOffsetAt(s);
     for (const dir of [1, -1]) {
@@ -62,9 +75,10 @@ test('the road widens over a taper rather than in one step', () => {
   // The pavement has to grow smoothly -- a step in the road edge is a step in
   // the terrain skirt and in what counts as off the road -- while the extra lane
   // only opens once there is a whole one of it.
+  const townLine = route.corridor.sections.find((sec) => sec.kind === 'suburban').s;
   let maxJump = 0;
   let opened = null;
-  for (let s = 7900; s < 8500; s += 2) {
+  for (let s = townLine - 300; s < townLine + 300; s += 2) {
     const jump = Math.abs(route.halfWidthAt(s) - route.halfWidthAt(s - 2));
     maxJump = Math.max(maxJump, jump);
     if (opened === null && route.laneCountAt(s) > 1) opened = s;

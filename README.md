@@ -64,7 +64,9 @@ radii equal, clamped at the box's 25° of travel and faded out above manoeuvring
 speed, because a rear axle group steering itself at road speed does not shorten
 anything, it just wags the tail of a 212,000 lb load.
 
-`tools/offtrack.mjs` measures it on a steady 8 mph corner at ¾ lock:
+`tools/offtrack.mjs` measures it on a steady 8 mph corner at ¾ lock — which,
+now that there are seven turns on the route at around a hundred metres, is a
+corner you take rather than a hypothetical:
 
 ```
 rear axles locked straight            9.40 m swept path   (articulation 65.2°)
@@ -140,16 +142,23 @@ pavement widens first, and the lane is only usable once the taper has finished.
 | Bennett yard road | 1 | — | 30 |
 | County Highway 14 | 1 | double yellow | 45 |
 | Ridge Road | 1, no shoulder | double yellow | 35 |
+| Valley Road | 1 | double yellow | 45 |
 | Cloverdale Pike | 2 | centre turn lane | 35 |
 | Substation approach | 1 | — | 25 |
+
+The pavement also widens through each of the turns onto a new road. That is not
+decoration: a 87 ft combination swinging through a hundred-metre radius puts its
+rear axles well inside the tractor's path, and the widening is the pavement the
+trailer needs to track across. It is the same taper mechanism as the extra lane
+in town, declared as a short section with a wider shoulder.
 
 Almost everything the other vehicles on the road do falls out of that. On the
 county highway a 3.66 m load in a 3.7 m lane leaves oncoming traffic nowhere to
 be except the shoulder, stopped, until the whole formation is past. On the
 arterial the same load takes the inside lane and everything coming the other way
 simply moves over one and keeps going — the move stops being something that
-shuts the road in both directions. The convoy test measures both: **86%** of
-oncoming traffic pulls over and stops on the two-lane road, against **2%**
+shuts the road in both directions. The convoy test measures both: **82%** of
+oncoming traffic pulls over and stops on the two-lane road, against **1%**
 through town.
 
 The paint is geometry, not a baked texture, because the road is not one width for
@@ -229,24 +238,122 @@ rendering: they yaw into a lane change before they get there, their front wheels
 stay turned for as long as they are turning, and they pitch with the grade.
 Without that, a shoulder pull-off is a box being slid sideways across the road.
 
-The mission test asserts all ten junctions are blocked before the load arrives,
+The mission test asserts all fourteen junctions are blocked before the load arrives,
 and the convoy test asserts nothing on the road ever occupies the same space as
 the load.
 
 ## The route
 
-7.5 miles from the yard to Cloverdale Substation, surveyed the way a permit route
-is — every obstruction known in advance:
+8.1 miles from the yard to Cloverdale Substation, written the way a survey
+describes a road rather than as a list of coordinates:
 
-- Fourteen junctions for the escorts to hold, five of them signalised crossroads
+```js
+s.run(210);
+s.mark('onto CH14');
+s.left(86, 115);                 // onto County Highway 14
+```
+
+That is not a stylistic choice. The centreline used to be forty-eight control
+points read off a sketch, and stated that way nobody could see that the whole
+seven and a half miles contained **three** corners — everything between the
+switchback and the valley bend was a curve of over a kilometre's radius, which
+from the cab is a straight line. You cannot see a radius in a list of
+coordinates. Stated as turns, the corner is the unit of design, and
+`tools/survey.mjs` walks the finished centreline and reports every one of them:
+
+```
+corner        at        through   min radius   advisory
+  right       298 m     86 deg       111 m       9 mph      onto County Highway 14
+  right      2318 m     76 deg       109 m       9 mph      at the County Route 9 signal
+  left       3723 m     64 deg       119 m      10 mph      onto Ridge Road
+  right      4985 m    158 deg        95 m       7 mph      the switchback
+  left       7050 m     84 deg       110 m       9 mph      onto Valley Road
+  right      9063 m     78 deg       109 m      10 mph      into Cloverdale
+  left      12498 m     88 deg       102 m       8 mph      in at the substation gate
+```
+
+Twenty-nine corners in all, seven of them turns off one road onto another. The
+survey is also where everything else on the route is placed from: every junction,
+bridge, grade and change of cross-section is declared at a named mark rather than
+at a number, so moving a corner moves everything standing on it instead of
+leaving a bridge in a field.
+
+- Fourteen junctions for the escorts to hold, five of them signalised crossroads,
+  and one of those is a junction the load **turns at** — the unit takes the light
+  and the load swings through the intersection at nine miles an hour
 - Three bridges with posted clearances; the tightest leaves **87 cm** over a
   13'-7" load, and the lead car's pole is your proxy for it
-- A 159 m switchback that needs the trailer's rear steer
+- A 103 m switchback through 158°, which is what the trailer's rear steer exists
+  for
 - A sustained **−9% descent**, where the compression brake is not optional
-  equipment — the mission test measures 205 °C in the drums without it against
-  139 °C with it
-- Two miles of suburban arterial at the end of it, where the road is five lanes
-  wide and the escort work is lights rather than roadblocks
+  equipment — the mission test measures 274 °C in the drums without it against
+  187 °C with it
+- A mile and a half of suburban arterial at the end of it, where the road is five
+  lanes wide and the escort work is lights rather than roadblocks
+
+The move takes about **28 minutes**, most of which is the seven turns: a
+212,000 lb load does not carry speed into a hundred-metre radius, and the lead
+car calls each one over the radio before you can see it.
+
+## What a frame costs
+
+The simulation is only half of whether this runs well; the other half is what
+gets handed to the GPU, and for a long time that was around twelve hundred draw
+calls and 736,000 triangles — most of it not visible.
+
+Three things were wrong, and they compounded:
+
+**Nothing culled.** Three.js culls by bounding sphere, and the terrain, the
+2,600 trees, the guardrail, the power poles, the whole town and every painted
+line were each a single object spanning the entire route. Their bounding spheres
+were seven miles across, so they were never off screen and all of it was
+submitted every frame — and again for the shadow map. Everything static is built
+in 320 m chunks now, which is what lets the frustum test answer "no".
+
+**Everything was inside the far plane.** Six kilometres of draw distance on a
+twelve-kilometre route meant the town was being drawn from seven kilometres away,
+through fog that had already faded it to flat grey. Detail carries its own cull
+range now — trees at 1.7 km, street furniture and lane paint under a kilometre —
+which is what makes it affordable to see the country the route runs through at
+all.
+
+**A body panel was three hundred triangles.** Every part of every vehicle was a
+`RoundedBoxGeometry` at two segments of corner detail, twenty-five times a plain
+box, for a fillet a few centimetres across. One segment reads the same; under
+about three centimetres of radius the rounding is dropped entirely. The parts of
+a vehicle that share a material are also welded into one buffer, so a car is ten
+meshes rather than fifteen and the rig is twenty rather than sixty-five. Wheels
+stay separate because they turn — except a car's rear pair, which turns about one
+axle line and so is exact to weld.
+
+```
+                     before          after
+draw calls        826 – 1,179      271 – 775
+triangles      697k – 738k       71k – 229k
+draw distance         6 km            9 km
+```
+
+`tools/frame.mjs` produces that table from the running page and
+`tools/perf.mjs` measures the simulation headlessly — it is about 0.6 ms a
+frame, four percent of a 60 Hz budget, with the physics running at 200 Hz
+underneath it.
+
+Two things sit on top. Resolution scales down toward half when the frame runs
+late and back up after two seconds comfortably inside budget, because a dropped
+frame is far more visible than a soft edge. And a road's worth of traffic is
+built at load time and parked in the pool, so a car appearing over the crest is a
+transform update rather than a dozen geometries, a merge and a shader compile
+inside one frame.
+
+### Why the traffic used to judder
+
+Worth its own note, because it looked like a rendering problem and was not.
+Everything whose position comes from an arc length — all the ambient traffic, all
+four escorts, every car on a cross street — was placed by snapping to the nearest
+of 2,401 samples along the route. Those samples are five metres apart. So a car
+doing 45 mph stood still for a quarter of a second and then teleported five
+metres forward, and no amount of smoothing downstream could fix it, because the
+motion was never there. The route interpolates between samples now.
 
 ## Sound
 
@@ -300,8 +407,9 @@ Release the parking brake to start. Take the switchback at eight.
 ```
 src/
   physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig
-  world/       Route (spline, junctions, bridges, grades), Corridor (lanes and
-               cross-section), Signal (controllers), Ground (terrain + grip)
+  world/       Survey (the centreline, as runs and turns), Route (junctions,
+               bridges, grades, projection), Corridor (lanes and cross-section),
+               Signal (controllers), Ground (terrain + grip)
   ai/          Traffic (IDM, lanes, signals), Escort (blockades, leapfrog,
                preemption, radio), CrossTraffic, RoadPose
   render/      Scene (sky, lighting, probe), Models, WorldMesh
@@ -310,7 +418,9 @@ src/
   ui/          HUD, Debrief, style
   core/        Input
 test/          physics, convoy, mission, road, scorecard, handedness
-tools/         layout.mjs (load analysis), plus driving and browser harnesses
+tools/         layout.mjs (load analysis), survey.mjs (every corner on the
+               route), perf.mjs and frame.mjs (what a frame costs), plus the
+               driving and browser harnesses
 ```
 
 ### Which way is right
