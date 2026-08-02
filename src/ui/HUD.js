@@ -118,7 +118,11 @@ export class HUD {
     this.el.axles.innerHTML = groups
       .map((g, i) => {
         this._axleSmooth[i] += (g.lb - this._axleSmooth[i]) * 0.06;
-        return `<div class="axle-row"><span>${g.label}</span>` +
+        // A lifted axle reads zero, which on its own looks like a broken gauge.
+        // Say what it is instead, and mark the ones that steer.
+        const note = g.lifted ? '<span class="axle-note">lifted</span>'
+          : g.steered ? '<span class="axle-note">steer</span>' : '';
+        return `<div class="axle-row"><span>${g.label}${note}</span>` +
           `<span>${Math.round(this._axleSmooth[i]).toLocaleString()} lb</span></div>`;
       })
       .join('');
@@ -148,6 +152,7 @@ export class HUD {
       ['DIFF', rig.diffLock, 'ok'],
       ['AUTO', game.autoShift, 'ok'],
       ['R-STEER', Math.abs(rig.trailerSteerAngle) > 0.02, 'ok'],
+      ['STEERMAN', rig.autoTrailerSteer, 'ok'],
       ['MUTE', game.audio.muted, 'critical'],
     ];
     this.el.indicators.innerHTML = lamps

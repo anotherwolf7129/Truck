@@ -177,8 +177,14 @@ export class Route {
     for (let i = 0; i < raw.length; i++) {
       if (i > 0) acc += raw[i].distanceTo(raw[i - 1]);
       const tangent = this.curve.getTangentAt(i / (raw.length - 1)).normalize();
-      // Lateral axis, level with the world so the road banks only where we say.
-      const lateral = new Vector3(tangent.z, 0, -tangent.x).normalize();
+      // Lateral axis: the driver's right, level with the world so the road banks
+      // only where we say. In a right-handed frame with +Y up, the right-hand
+      // side of a heading is `tangent x up`, which is (-tz, 0, tx). Getting this
+      // backwards mirrors the whole world -- the load ends up in the oncoming
+      // lane and every sign is on the wrong shoulder -- so it is worth being
+      // explicit about where it comes from. See LOCAL_RIGHT in Vehicle.js for
+      // the same convention on the vehicle bodies.
+      const lateral = new Vector3(-tangent.z, 0, tangent.x).normalize();
       this.samples.push({ s: acc, position: raw[i].clone(), tangent, lateral });
     }
     this.length = acc;

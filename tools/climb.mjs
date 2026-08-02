@@ -26,7 +26,7 @@ for(let i=0;i<200*40;i++){
     const p=rig.tractor.body.position; const pr=route.project(p.x,p.z);
     const aim=route.positionAt(pr.s+Math.max(18,Math.abs(rig.speedMph)*1.5), route.convoyLaneOffset(pr.s), new Vector3());
     const fwd=rig.tractor.body.localToWorldDir(new Vector3(0,0,1),new Vector3());
-    const right=rig.tractor.body.localToWorldDir(new Vector3(1,0,0),new Vector3());
+    const right=rig.tractor.body.localToWorldDir(new Vector3(-1,0,0),new Vector3());
     const toAim=aim.sub(p);
     rig.steerInput=Math.max(-1,Math.min(1,Math.atan2(toAim.dot(right),Math.max(1,toAim.dot(fwd)))*2.2));
   }

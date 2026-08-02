@@ -44,6 +44,39 @@ well inside the tractor's path through a corner, the load pushing the drives
 around under braking, and the slow two-pivot sway that builds if you correct too
 fast at speed.
 
+The lowboy's four axles are individually simulated and individually weighed —
+the permit readout breaks them out one by one, because on a multi-axle trailer
+the group total is not the number anybody argues about. The second axle lifts
+(<kbd>L</kbd>), which moves several thousand pounds onto its neighbours; the
+rear two steer.
+
+### The rear steer, and the steerman on the box
+
+Through a corner the back of a lowboy cuts inside the tractor's path. That gap
+is off-tracking, and it is what decides whether a permit move fits round a bend
+at all. Steering the rear axle group *out* of the corner pushes the tail back
+out onto the tractor's line.
+
+The geometry says exactly how far: the rear axles trace the same radius as the
+gooseneck when they are held at minus the articulation angle. So that is what
+the automatics hold — no gain, no tuning, just the angle that makes the two
+radii equal, clamped at the box's 25° of travel and faded out above manoeuvring
+speed, because a rear axle group steering itself at road speed does not shorten
+anything, it just wags the tail of a 212,000 lb load.
+
+`tools/offtrack.mjs` measures it on a steady 8 mph corner at ¾ lock:
+
+```
+rear axles locked straight            9.40 m swept path   (articulation 65.2°)
+steerman on the automatics            6.23 m swept path   (articulation 50.6°)
+steerman winding it into the corner   8.61 m swept path   (articulation 58.1°)
+```
+
+The steerman is on the box by default (<kbd>G</kbd> takes him off it). <kbd>Q</kbd>
+and <kbd>E</kbd> override him the instant you touch them, which is the same
+arrangement as a real crew: the automatics hold the line, the driver takes it off
+them when he wants the tail somewhere the geometry would not put it.
+
 Geometry and spring rates are derived from a static load analysis
 (`tools/layout.mjs`) rather than guessed, and it lands on realistic permit
 numbers:
@@ -247,16 +280,18 @@ test suite asserts on rather than a second implementation that can drift.
 | | | | |
 |---|---|---|---|
 | Steer | <kbd>A</kbd> <kbd>D</kbd> | Throttle / brake | <kbd>W</kbd> <kbd>S</kbd> |
-| Trailer rear steer | <kbd>Q</kbd> <kbd>E</kbd> | Parking brake | <kbd>Space</kbd> |
-| Shift up / down | <kbd>Shift</kbd> <kbd>Ctrl</kbd> | Auto shift | <kbd>T</kbd> |
-| Compression brake | <kbd>B</kbd> | Diff lock | <kbd>F</kbd> |
-| Camera | <kbd>C</kbd> | Look back | <kbd>X</kbd> |
-| Lift axle | <kbd>L</kbd> | Reset | <kbd>P</kbd> |
-| Pause | <kbd>Esc</kbd> | Mute | <kbd>M</kbd> |
+| Trailer rear steer | <kbd>Q</kbd> <kbd>E</kbd> | Steerman (auto rear steer) | <kbd>G</kbd> |
+| Parking brake | <kbd>Space</kbd> | Shift up / down | <kbd>Shift</kbd> <kbd>Ctrl</kbd> |
+| Auto shift | <kbd>T</kbd> | Compression brake | <kbd>B</kbd> |
+| Diff lock | <kbd>F</kbd> | Camera | <kbd>C</kbd> |
+| Look back | <kbd>X</kbd> | Lift axle | <kbd>L</kbd> |
+| Reset | <kbd>P</kbd> | Pause | <kbd>Esc</kbd> |
+| Mute | <kbd>M</kbd> | | |
 
-Gamepads work: left stick steers, triggers are the pedals, right stick is the
-rear steer. Steering is deliberately rate-limited — a truck's box is about five
-turns lock to lock, and a load this tall punishes fast corrections.
+Arrow keys mirror <kbd>WASD</kbd>. Gamepads work: left stick steers, triggers are
+the pedals, right stick is the rear steer. Steering is deliberately rate-limited
+— a truck's box is about five turns lock to lock, and a load this tall punishes
+fast corrections.
 
 Release the parking brake to start. Take the switchback at eight.
 
@@ -274,9 +309,24 @@ src/
   mission/     Scorecard (how the move actually went)
   ui/          HUD, Debrief, style
   core/        Input
-test/          physics, convoy, mission, road, scorecard
+test/          physics, convoy, mission, road, scorecard, handedness
 tools/         layout.mjs (load analysis), plus driving and browser harnesses
 ```
+
+### Which way is right
+
+Three.js is right-handed. With +Y up and the rig facing +Z, the driver's
+right-hand side is `forward × up`, which is **−X**, and a right turn is a
+**negative** rotation about +Y. The axis labels suggest otherwise and that has
+cost this project twice: getting it backwards mirrors the entire simulation, so
+the right arrow key steers left and the load drives up the oncoming lane.
+
+Two constants carry the convention — `LOCAL_RIGHT` in `physics/Vehicle.js` and
+the lateral axis in `world/Route.js` — and every steer angle below
+`Rig.applySteering` is stored as the raw rotation about +Y, so the sign flip
+lives in exactly one place instead of being scattered. `test/handedness.test.js`
+asserts the observable end of it: which way the rig goes when you press the
+right arrow, and which side of the paint the permitted lane is on.
 
 `tools/` holds the harnesses used to develop and verify the model — the static
 load analysis the geometry comes from, acceleration/braking/cornering sweeps, a

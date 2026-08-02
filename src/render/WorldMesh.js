@@ -106,9 +106,10 @@ export class WorldMesh {
         // Wound counter-clockwise seen from above so the surface normal points
         // up. The other winding leaves the road backface-culled, and since the
         // terrain skirts stop at the pavement edge you end up looking straight
-        // through the road at the sky.
+        // through the road at the sky. Which way round that is depends on which
+        // way the route's lateral axis points, so this follows it.
         const a = i * 2;
-        indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+        indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
       }
     }
 
@@ -232,7 +233,7 @@ export class WorldMesh {
         target.positions.push(_p.x, this.surfaceY(sample, lateral) + 0.004, _p.z);
       }
       if (prevBase >= 0) {
-        target.indices.push(prevBase, base, prevBase + 1, prevBase + 1, base, base + 1);
+        target.indices.push(prevBase, prevBase + 1, base, prevBase + 1, base + 1, base);
       }
       prevBase = base;
     }
@@ -295,8 +296,8 @@ export class WorldMesh {
           const a = base + i * (lanes + 1) + j;
           const b = a + (lanes + 1);
           // Wind each skirt so both faces point up.
-          if (side > 0) indices.push(a, b, a + 1, b, b + 1, a + 1);
-          else indices.push(a, a + 1, b, b, a + 1, b + 1);
+          if (side > 0) indices.push(a, a + 1, b, b, a + 1, b + 1);
+          else indices.push(a, b, a + 1, b, b + 1, a + 1);
         }
       }
     }
@@ -660,7 +661,7 @@ export class WorldMesh {
         target.positions.push(_p.x, Math.max(ground, sample.position.y) + height, _p.z);
       }
       if (prevBase >= 0) {
-        target.indices.push(prevBase, base, prevBase + 1, prevBase + 1, base, base + 1);
+        target.indices.push(prevBase, prevBase + 1, base, prevBase + 1, base + 1, base);
       }
       prevBase = base;
     }

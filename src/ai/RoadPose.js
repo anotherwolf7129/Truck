@@ -59,9 +59,11 @@ export class RoadPose {
     route.positionAt(s, lateral, this.position);
 
     // Rate the body is crossing the road, expressed in its own frame: positive
-    // is toward its right whichever way it is pointing.
+    // is toward its LEFT whichever way it is pointing. Left, because the slip it
+    // becomes is added straight onto a yaw, and a positive yaw about +Y turns
+    // left; the extra negation converts the route's right-handed lateral axis.
     const drift = this._settled && dt > 1e-6
-      ? ((lateral - this.lateral) / dt) * this.direction
+      ? -((lateral - this.lateral) / dt) * this.direction
       : 0;
     this.lateral = lateral;
     this._settled = true;

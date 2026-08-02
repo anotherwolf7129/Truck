@@ -266,6 +266,14 @@ export class Game {
     }
 
     if (input.tapped('autoShift')) this.autoShift = !this.autoShift;
+    if (input.tapped('steerman')) {
+      rig.autoTrailerSteer = !rig.autoTrailerSteer;
+      this.convoy.radio.say('Lead',
+        rig.autoTrailerSteer
+          ? 'Steerman has the rear axles. He will follow you round.'
+          : 'Rear axles are yours -- Q and E. Steerman is off the box.',
+        { time: this.convoy.time });
+    }
     if (!this.autoShift) {
       if (input.tapped('shiftUp')) rig.powertrain.shiftUp();
       if (input.tapped('shiftDown')) rig.powertrain.shiftDown();
