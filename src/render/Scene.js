@@ -23,7 +23,18 @@ export class RenderContext {
       powerPreference: 'high-performance',
       stencil: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Resolution is a scale on the device pixel ratio rather than a fixed
+    // number, so it can be pulled down when the frame is running late. A retina
+    // display asks for four times the pixels of a 1x one for the same window,
+    // and a loaded rig with a convoy around it is the wrong moment to be paying
+    // that in full.
+    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    this.pixelScale = 1;
+    this.frameBudget = 1 / 55;   // seconds; below this we are comfortably at 60
+    this._frameAvg = 1 / 60;
+    this._settleFor = 0;
+
+    this.renderer.setPixelRatio(this.maxPixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
@@ -32,7 +43,12 @@ export class RenderContext {
     this.renderer.shadowMap.type = PCFSoftShadowMap;
 
     this.scene = new Scene();
-    this.camera = new PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.25, 6000);
+    // Far enough to see the country the route runs through. What used to make a
+    // long draw distance expensive was that everything on the route was inside
+    // it -- every tree, house and painted line, at any range. Those carry their
+    // own cull distance now, so what is left out here is the coarse terrain that
+    // makes the horizon, which is a few thousand triangles.
+    this.camera = new PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.25, 9000);
 
     // --- Sky ---------------------------------------------------------------
     // Preetham atmospheric scattering. It also feeds the reflection probe, so
@@ -72,9 +88,10 @@ export class RenderContext {
     this.probeGround = new Color(0x4a4536);
 
     // Fog starts well beyond the rig so the load itself never goes hazy, and
-    // reaches full density around the far ridgeline.
+    // reaches full density short of the far plane, so nothing ever pops out of
+    // existence at the edge of the frustum -- it has already gone to haze.
     this.fogColor = new Color(0xa8bdd4);
-    this.scene.fog = new Fog(this.fogColor, 900, 5200);
+    this.scene.fog = new Fog(this.fogColor, 700, 7000);
 
     this.setTimeOfDay(9.5);
 
@@ -218,6 +235,41 @@ export class RenderContext {
       cam.updateProjectionMatrix();
     }
     this.sun.target.updateMatrixWorld();
+  }
+
+  /**
+   * Trades resolution for frame rate when the frame is running late.
+   *
+   * A dropped frame is far more visible than a softer image -- the whole
+   * complaint about a simulator running badly is that the motion stutters, not
+   * that the edges are not crisp. So the render target is scaled between full
+   * resolution and half, following a smoothed frame time, and it only scales
+   * back up after the frame has been comfortably inside budget for a while.
+   * Without that hysteresis it oscillates: dropping the resolution makes the
+   * frame fast, which puts it straight back up, which makes it slow again.
+   *
+   * @param dt seconds the last frame actually took
+   */
+  adaptResolution(dt) {
+    if (!(dt > 0) || dt > 0.5) return;      // a tab coming back, not a slow frame
+    this._frameAvg += (dt - this._frameAvg) * 0.1;
+
+    const budget = this.frameBudget;
+    let scale = this.pixelScale;
+    if (this._frameAvg > budget * 1.25) {
+      scale = Math.max(0.5, scale - 0.08);
+      this._settleFor = 0;
+    } else if (this._frameAvg < budget * 0.8) {
+      this._settleFor += dt;
+      if (this._settleFor > 2) scale = Math.min(1, scale + 0.04);
+    } else {
+      this._settleFor = 0;
+    }
+
+    if (Math.abs(scale - this.pixelScale) > 1e-3) {
+      this.pixelScale = scale;
+      this.renderer.setPixelRatio(this.maxPixelRatio * scale);
+    }
   }
 
   render() {

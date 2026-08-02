@@ -31,7 +31,11 @@ function seedRandom(seed) {
  * staying out of the load, and queueing behind the rear escort instead of
  * streaming past a 3.66 m wide transformer.
  */
-function runConvoy({ minutes = 12, stopAt = null, seed = 20260801, startS = 30 } = {}) {
+// Long enough to run the whole route at the advisory speed. The turns onto each
+// new road are taken at eight or nine miles an hour, so a move that used to be
+// over in twelve minutes is not any more, and a run that stops halfway is not
+// testing the town.
+function runConvoy({ minutes = 26, stopAt = null, seed = 20260801, startS = 30 } = {}) {
   const restoreRandom = seedRandom(seed);
   const route = new Route();
   const convoy = new ConvoyManager(route, null);
@@ -112,7 +116,12 @@ function runConvoy({ minutes = 12, stopAt = null, seed = 20260801, startS = 30 }
       // something is stopping it.
       for (const c of b.cross?.vehicles ?? []) {
         report.crossVehicleFrames++;
-        const alongRoute = Math.abs(c.u) < 12;
+        // In the intersection means on the highway's pavement, which is a
+        // different width at every junction on the route -- and at a junction
+        // the load turns at, wider still, because the turn carries extra
+        // shoulder. A fixed box counted a car correctly stopped at its own stop
+        // line as being in the road.
+        const alongRoute = Math.abs(c.u) < route.halfWidthAt(b.s);
         if (alongRoute && Math.abs(b.s - s) < LOAD.length + 12) report.crossInsideLoad++;
       }
     }

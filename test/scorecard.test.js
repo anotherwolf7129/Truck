@@ -114,28 +114,31 @@ test('teleporting up the route does not fail the junctions that were skipped', (
   // seven miles first. Everything behind the jump was never driven, so it must
   // not be scored -- otherwise the card reports a wall of failures for road the
   // player never saw.
-  const card = new Scorecard(route, 4.15);
   const convoy = fakeConvoy([]);   // nothing blocked, since no unit was sent
 
-  const from = 11400;
-  card.skipTo(from);
-  for (let s = from; s <= route.destination.s; s += 10) {
+  // Past the last junction on the route: nothing left to hold, nothing to miss.
+  const card = new Scorecard(route, 4.15);
+  const past = route.junctions[route.junctions.length - 1].s + 60;
+  card.skipTo(past);
+  for (let s = past; s <= route.destination.s; s += 10) {
     card.observe(1 / 60, fakeRig({}), convoy, s, 1.85);
   }
   card.finish('delivered');
 
-  console.log(`  jumped to ${from} m: missed ${card.report.junctionsMissed.length} junctions`);
+  console.log(`  jumped to ${past.toFixed(0)} m: missed ${card.report.junctionsMissed.length} junctions`);
   assert.deepStrictEqual(card.report.junctionsMissed, [],
     'junctions behind the jump should not be judged');
 
-  // A junction genuinely ahead of the jump is still judged as normal.
+  // Junctions genuinely ahead of the jump are still judged as normal.
+  const from = route.junctions[route.junctions.length - 3].s - 60;
   const ahead = route.junctions.filter((j) => j.s > from);
+  assert.ok(ahead.length >= 3, 'the fixture needs junctions ahead of the jump');
   const late = new Scorecard(route, 4.15);
   late.skipTo(from);
   for (let s = from; s <= route.length; s += 10) {
     late.observe(1 / 60, fakeRig({}), convoy, s, 1.85);
   }
-  assert.strictEqual(late.report.junctionsMissed.length, ahead.length,
+  assert.deepStrictEqual(late.report.junctionsMissed, ahead.map((j) => j.name),
     'junctions ahead of the jump must still be scored');
 });
 

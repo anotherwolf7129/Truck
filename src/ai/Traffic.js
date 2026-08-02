@@ -350,8 +350,15 @@ export class TrafficVehicle {
     for (const b of world.blockades) {
       if (!b.active || !b.holdsMainline) continue;
       const ahead = (b.s - this.s) * this.direction;
-      if (ahead > 0 && ahead < 220) {
-        stopFor(ahead - MAINLINE_STOP_BACK);
+      // A vehicle that is already inside the area the unit is crossing does not
+      // stop in it -- it clears. Stopping back is only an option for whoever is
+      // still far enough away to do it, and the standoff the stop line exists to
+      // prevent is exactly the one where a car halts on top of the unit and then
+      // neither of them can move. An officer stood in the road waving is asking
+      // the car beside him to keep going, not to park there.
+      const stopAt = ahead - MAINLINE_STOP_BACK;
+      if (ahead > 0 && ahead < 220 && stopAt > 0) {
+        stopFor(stopAt);
         yielding = true;
       }
     }
