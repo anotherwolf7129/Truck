@@ -871,7 +871,19 @@ export class WorldMesh {
 
     // --- Houses -------------------------------------------------------------
     const wallGeo = new BoxGeometry(11, 3.4, 8.5);
-    const roofGeo = new ConeGeometry(8.4, 2.6, 4);
+    // A four-sided cone is a hipped roof. It used to be a 16.8 m pyramid over an
+    // 11 x 8.5 house -- hanging a full storey out past the walls on every side,
+    // which is what made a street of these read as a row of dark plates on
+    // sticks rather than as houses.
+    //
+    // Turned 45 degrees and stretched to the plan *in the geometry* rather than
+    // on the instance, because an instance matrix scales before it rotates: a
+    // scale applied to an already-turned roof stretches its diagonals, not its
+    // eaves. Done here, the instance is free to scale it with the walls.
+    const eave = 1.06;                       // slight overhang past the wall
+    const roofGeo = new ConeGeometry(1, 2.6, 4)
+      .rotateY(Math.PI / 4)
+      .scale(11 * 0.5 * eave * Math.SQRT2, 1, 8.5 * 0.5 * eave * Math.SQRT2);
     // Laid flat at build time so an instance's local +Z is its length. That
     // lets each drive be aimed at its own house with `lookAt`, which picks up
     // the fall of the ground between the kerb and the door -- a driveway placed
@@ -884,6 +896,18 @@ export class WorldMesh {
     const postGeo = new CylinderGeometry(0.05, 0.05, 1.1, 5);
     const boxMat = new MeshStandardMaterial({ color: 0x39424c, roughness: 0.7, metalness: 0.3 });
     const woodMat = new MeshStandardMaterial({ color: 0x6b5844, roughness: 0.95 });
+
+    // Openings on the wall that faces the road. A house without them is a shed,
+    // and a street of sheds is what the town looked like -- the setback, the
+    // driveway and the mailbox all say "somewhere people live" and then the
+    // building itself says nothing. Three panes and a door, one instanced mesh
+    // for the whole town, at the cost of four triangles a house.
+    const glazingGeo = new BoxGeometry(7.4, 1.15, 0.12);
+    const doorGeo = new BoxGeometry(1.0, 2.1, 0.12);
+    const glazingMat = new MeshStandardMaterial({
+      color: 0x2b3540, roughness: 0.15, metalness: 0.1,
+    });
+    const doorMat = new MeshStandardMaterial({ color: 0x53402e, roughness: 0.8 });
 
     const lots = [];
     for (const [a, b] of spans) {
@@ -898,6 +922,8 @@ export class WorldMesh {
 
     const walls = new InstanceSet(wallGeo, wallMat, { castShadow: true, receiveShadow: true });
     const roofs = new InstanceSet(roofGeo, roofMat, { castShadow: true });
+    const glazing = new InstanceSet(glazingGeo, glazingMat);
+    const doors = new InstanceSet(doorGeo, doorMat);
     const drives = new InstanceSet(driveGeo, driveMat);
     const boxes = new InstanceSet(boxGeo, boxMat);
     const posts = new InstanceSet(postGeo, woodMat);
@@ -914,16 +940,45 @@ export class WorldMesh {
       // them read as a street rather than as a field of sheds.
       const heading = route.headingAt(lot.s) + lot.yaw + Math.PI / 2;
 
+      const spread = 0.8 + Math.random() * 0.35;
+      const depth = 0.85 + Math.random() * 0.3;
       _dummy.position.set(_p.x, h + 1.7, _p.z);
       _dummy.rotation.set(0, heading, 0);
-      _dummy.scale.set(0.8 + Math.random() * 0.35, 1, 0.85 + Math.random() * 0.3);
+      _dummy.scale.set(spread, 1, depth);
       _dummy.updateMatrix();
       paint.setHex(palette[i % palette.length]);
       walls.push(lot.s, _dummy.matrix, paint);
 
-      _dummy.position.y = h + 4.5;
-      _dummy.rotation.set(0, heading + Math.PI / 4, 0);
-      _dummy.scale.set(0.95, 1, 0.95);
+      // Windows and a front door, on the face that looks at the road. Which face
+      // that is depends on which side of the road the lot is: the wall is turned
+      // to run along the highway, so its local +Z points back across it, and a
+      // house on the far side wants the opposite one.
+      const faceX = Math.sin(heading);
+      const faceZ = Math.cos(heading);
+      const alongX = Math.cos(heading);
+      const alongZ = -Math.sin(heading);
+      const out = lot.side * (8.5 * depth * 0.5 + 0.07);
+      _dummy.scale.setScalar(1);
+
+      _dummy.position.set(_p.x + faceX * out, h + 2.15, _p.z + faceZ * out);
+      _dummy.updateMatrix();
+      glazing.push(lot.s, _dummy.matrix);
+
+      const doorAlong = (i % 2 ? 1 : -1) * 3.1 * spread;
+      _dummy.position.set(
+        _p.x + faceX * out + alongX * doorAlong,
+        h + 1.05,
+        _p.z + faceZ * out + alongZ * doorAlong
+      );
+      _dummy.updateMatrix();
+      doors.push(lot.s, _dummy.matrix);
+
+      // Sat on the wall top and stretched with the same spread and depth the
+      // walls got, so a wide house has a wide roof rather than the one roof size
+      // sitting on every plan.
+      _dummy.position.y = h + 4.6;
+      _dummy.rotation.set(0, heading, 0);
+      _dummy.scale.set(spread, 1, depth);
       _dummy.updateMatrix();
       roofs.push(lot.s, _dummy.matrix);
 
@@ -962,7 +1017,9 @@ export class WorldMesh {
 
     walls.build(this.group, this.ranged, TREE_RANGE);
     roofs.build(this.group, this.ranged, TREE_RANGE);
-    for (const set of [drives, boxes, posts]) set.build(this.group, this.ranged, DETAIL_RANGE);
+    for (const set of [glazing, doors, drives, boxes, posts]) {
+      set.build(this.group, this.ranged, DETAIL_RANGE);
+    }
 
     // --- Street lighting ----------------------------------------------------
     const lightPoleGeo = new CylinderGeometry(0.11, 0.15, 8.4, 8);
