@@ -1,7 +1,13 @@
 import { Vector3 } from 'three';
 
 const _p = new Vector3();
-const _proj = {};
+// One projection record per role. `_scratch` belongs to an unhinted heightAt
+// call, `_centre` to the point a full sample is being taken at, and `_offset` to
+// the four finite-difference probes around it -- so a probe can never overwrite
+// the centre projection it was derived from.
+const _scratch = {};
+const _centre = {};
+const _offset = {};
 
 /**
  * Deterministic value noise. Seeded and hash-based so the terrain is identical
@@ -83,9 +89,9 @@ export class Ground {
    * couple of lot depths of the kerb was levelled when the place was built, and
    * without that the whole town ends up pitched down a 45 degree bank.
    */
-  heightAt(x, z) {
+  heightAt(x, z, projection = null) {
     const route = this.route;
-    route.project(x, z, _proj);
+    const _proj = projection ?? route.project(x, z, _scratch);
     const dist = Math.abs(_proj.lateral);
 
     const roadY = route.elevationAt(x, z, _proj);
@@ -123,16 +129,23 @@ export class Ground {
    * The normal comes from finite differences of the height field.
    */
   sample(x, z) {
-    const h = this.heightAt(x, z);
+    const route = this.route;
+    // One projection for the whole sample. The four probes below are within a
+    // metre of it, so they reuse its sample index as a hint instead of going
+    // back through the spatial index -- which turns six index queries per wheel
+    // per step into one.
+    route.project(x, z, _centre);
+    const hint = _centre.index;
+    const h = this.heightAt(x, z, _centre);
+
     const e = 1.0;
-    const hx = this.heightAt(x + e, z) - this.heightAt(x - e, z);
-    const hz = this.heightAt(x, z + e) - this.heightAt(x, z - e);
+    const hx = this.probe(x + e, z, hint) - this.probe(x - e, z, hint);
+    const hz = this.probe(x, z + e, hint) - this.probe(x, z - e, hint);
 
     const n = this._result.normal;
     n.set(-hx / (2 * e), 1, -hz / (2 * e)).normalize();
 
-    this.route.project(x, z, _proj);
-    const surface = this.surfaceAt(Math.abs(_proj.lateral), _proj.s);
+    const surface = this.surfaceAt(Math.abs(_centre.lateral), _centre.s);
     let grip = this.surfaceGrip[surface];
     // Wet pavement loses far more grip than wet gravel does.
     grip *= 1 - this.wetness * (surface === 'asphalt' ? 0.32 : 0.18);
@@ -140,7 +153,14 @@ export class Ground {
     this._result.height = h;
     this._result.grip = grip;
     this._result.surface = surface;
+    this._result.index = hint;
     return this._result;
+  }
+
+  /** Height at a point known to be beside a sample we have already found. */
+  probe(x, z, hint) {
+    this.route.projectNear(x, z, hint, _offset);
+    return this.heightAt(x, z, _offset);
   }
 
   /** Height of the road surface directly, ignoring terrain. Used by the AI. */

@@ -172,6 +172,13 @@ export class Route {
     this.samples = [];
     this.length = 0;
 
+    // Scratch sample records, so the hot lookups below never allocate. Each one
+    // is owned by exactly one method: sharing them would mean a call made in the
+    // middle of another one silently rewrote its result.
+    this._scratchA = {};
+    this._scratchB = {};
+    this._scratchC = {};
+
     const raw = this.curve.getSpacedPoints(count);
     let acc = 0;
     for (let i = 0; i < raw.length; i++) {
@@ -188,49 +195,92 @@ export class Route {
       this.samples.push({ s: acc, position: raw[i].clone(), tangent, lateral });
     }
     this.length = acc;
+    this._spacing = this.length / (this.samples.length - 1);
 
     // Uniform bucket index over the XZ plane for fast nearest-sample queries.
+    //
+    // The key is packed into a single integer rather than formatted into a
+    // string. Ground sampling drives this from the physics loop -- two dozen
+    // wheels, two hundred times a second -- and a template literal there is tens
+    // of thousands of short-lived strings a second for the collector to sweep up,
+    // which is felt as a periodic hitch rather than as a lower frame rate.
     this.cell = 40;
     this.grid = new Map();
     for (let i = 0; i < this.samples.length; i++) {
       const p = this.samples[i].position;
-      const key = this.cellKey(p.x, p.z);
+      const cx = Math.floor(p.x / this.cell);
+      const cz = Math.floor(p.z / this.cell);
       // Register in the sample's own cell and its neighbours so a lookup only
       // ever has to read one bucket.
       for (let dx = -1; dx <= 1; dx++) {
         for (let dz = -1; dz <= 1; dz++) {
-          const k = `${Math.floor(p.x / this.cell) + dx},${Math.floor(p.z / this.cell) + dz}`;
+          const k = this.packKey(cx + dx, cz + dz);
           let list = this.grid.get(k);
           if (!list) this.grid.set(k, (list = []));
           if (list[list.length - 1] !== i) list.push(i);
         }
       }
-      void key;
     }
   }
 
-  cellKey(x, z) {
-    return `${Math.floor(x / this.cell)},${Math.floor(z / this.cell)}`;
+  /**
+   * Packs a signed cell coordinate pair into one integer.
+   *
+   * The route spans a few thousand metres either way, so ±16384 cells of range
+   * is far more than it can use and the product stays inside the exact-integer
+   * range of a double.
+   */
+  packKey(cx, cz) {
+    return (cx + 16384) * 32768 + (cz + 16384);
   }
 
-  /** Sample at arc length `s`, clamped to the route. */
+  cellKey(x, z) {
+    return this.packKey(Math.floor(x / this.cell), Math.floor(z / this.cell));
+  }
+
+  /**
+   * Sample at arc length `s`, clamped to the route.
+   *
+   * Interpolated between the two bracketing samples rather than snapped to the
+   * nearer one. The samples are five metres apart, and snapping means every
+   * vehicle whose position comes from an arc length -- which is all the traffic,
+   * all four escorts and every car on a cross street -- stands still for a
+   * quarter of a second and then teleports five metres forward. It reads as the
+   * whole road juddering, and no amount of smoothing further down can undo it
+   * because the motion was never there to begin with.
+   *
+   * `out` is filled in place. Pass a scratch object to avoid allocating; the
+   * default allocates, so a caller can hold the result across other calls.
+   */
   at(s, out = {}) {
-    const clamped = Math.max(0, Math.min(this.length, s));
-    const i = Math.min(
-      this.samples.length - 1,
-      Math.max(0, Math.round((clamped / this.length) * (this.samples.length - 1)))
-    );
-    const sample = this.samples[i];
-    out.position = sample.position;
-    out.tangent = sample.tangent;
-    out.lateral = sample.lateral;
-    out.s = sample.s;
+    const n = this.samples.length;
+    const spacing = this._spacing;
+    const f = Math.max(0, Math.min(n - 1, s / spacing));
+    const i0 = Math.min(n - 1, Math.floor(f));
+    const i1 = Math.min(n - 1, i0 + 1);
+    const t = f - i0;
+
+    const a = this.samples[i0];
+    const b = this.samples[i1];
+
+    out.position = out.position instanceof Vector3 ? out.position : new Vector3();
+    out.tangent = out.tangent instanceof Vector3 ? out.tangent : new Vector3();
+    out.lateral = out.lateral instanceof Vector3 ? out.lateral : new Vector3();
+
+    out.position.lerpVectors(a.position, b.position, t);
+    // Direction vectors are renormalised after the lerp: on a 5 m chord the
+    // shortening is under a part in 10^5, but the tangent feeds every heading
+    // on the route and an un-normalised one biases them all the same way.
+    out.tangent.lerpVectors(a.tangent, b.tangent, t).normalize();
+    out.lateral.lerpVectors(a.lateral, b.lateral, t).normalize();
+    out.s = a.s + (b.s - a.s) * t;
+    out.index = i0;
     return out;
   }
 
   /** Heading in radians at arc length `s`. */
   headingAt(s) {
-    const { tangent } = this.at(s);
+    const { tangent } = this.at(s, this._scratchA);
     return Math.atan2(tangent.x, tangent.z);
   }
 
@@ -239,7 +289,7 @@ export class Route {
    * @param lateral metres right of the centreline
    */
   positionAt(s, lateral = 0, out = new Vector3()) {
-    const sample = this.at(s);
+    const sample = this.at(s, this._scratchA);
     out.copy(sample.position).addScaledVector(sample.lateral, lateral);
     return out;
   }
@@ -312,7 +362,8 @@ export class Route {
     let bestD = Infinity;
 
     if (candidates) {
-      for (const i of candidates) {
+      for (let n = 0; n < candidates.length; n++) {
+        const i = candidates[n];
         const p = this.samples[i].position;
         const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
         if (d < bestD) { bestD = d; best = i; }
@@ -327,6 +378,39 @@ export class Route {
       }
     }
 
+    return this.finishProjection(x, z, best, bestD, out);
+  }
+
+  /**
+   * Projects a point already known to lie near sample `hint`.
+   *
+   * The physics asks for the height at four points a metre either side of each
+   * contact patch in order to get a surface normal by finite difference. Those
+   * are all within a metre of a projection that has just been computed, so
+   * re-entering the spatial index for each of them is work with a known answer:
+   * scanning a handful of samples either side of the hint finds the same one for
+   * a fraction of the cost. If the winner lands on the edge of the window the
+   * hint was wrong and this falls back to the full query.
+   */
+  projectNear(x, z, hint, out = {}, window = 4) {
+    if (!(hint >= 0)) return this.project(x, z, out);
+    const lo = Math.max(0, hint - window);
+    const hi = Math.min(this.samples.length - 1, hint + window);
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = lo; i <= hi; i++) {
+      const p = this.samples[i].position;
+      const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if ((best === lo && lo > 0) || (best === hi && hi < this.samples.length - 1)) {
+      return this.project(x, z, out);
+    }
+    return this.finishProjection(x, z, best, bestD, out);
+  }
+
+  /** Turns a winning sample index into the projection result. */
+  finishProjection(x, z, best, bestD, out) {
     const sample = this.samples[best];
     _a.set(x - sample.position.x, 0, z - sample.position.z);
     const along = _a.dot(sample.tangent);
@@ -396,8 +480,8 @@ export class Route {
    * A sustained downgrade is what puts the brakes in trouble.
    */
   gradeAt(s, window = 40) {
-    const a = this.at(s - window / 2);
-    const b = this.at(s + window / 2);
+    const a = this.at(s - window / 2, this._scratchB);
+    const b = this.at(s + window / 2, this._scratchC);
     _a.copy(b.position).sub(a.position);
     const run = Math.hypot(_a.x, _a.z);
     return run > 0.01 ? _a.y / run : 0;

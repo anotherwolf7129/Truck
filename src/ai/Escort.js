@@ -179,6 +179,7 @@ export class EscortVehicle {
     this.position = this.pose.position;
     this.heading = 0;
     this.blockAngle = 0;         // eased angle across the mouth of a side road
+    this.blockWait = 0;          // seconds spent waiting for a gap to cross
     this.place(s, this.lateral);
   }
 
@@ -188,6 +189,7 @@ export class EscortVehicle {
     this.lateral = lateral;
     this.targetLateral = lateral;
     this.blockAngle = 0;
+    this.blockWait = 0;
     this.pose.reset(s, lateral);
     this.heading = this.pose.heading;
   }
@@ -525,6 +527,17 @@ export class ConvoyManager {
     return { s: b.s, lateral: b.side * (this.route.halfWidthAt(b.s) + 1.5) };
   }
 
+  /**
+   * Where a unit sits while it waits for room to cross to a side road.
+   *
+   * The shoulder on the convoy's own side: clear of the lane the load is routed
+   * down, clear of the lane the other unit leapfrogs up, and near enough to the
+   * mouth that it is across it a second after the gap appears.
+   */
+  waitLateral(b, unit) {
+    return this.route.edgeOffsetAt(b.s) + unit.width * 0.5 + 0.5;
+  }
+
   updatePolice(dt, unit) {
     const b = unit.assignment;
 
@@ -557,8 +570,25 @@ export class ConvoyManager {
     if (b && unit.state === 'blocking') {
       unit.lightsOn = true;
       const spot = this.blockPosition(b, unit);
+
       // Sit across the mouth of the side road, once there is room to get over.
-      unit.holdAt(dt, spot.s, this.laneClear(unit, spot.lateral) ? spot.lateral : unit.lateral);
+      //
+      // The wait for that room is bounded, and it has to be. What the unit is
+      // waiting on is often the queue the convoy itself has created, which will
+      // not clear until the load is past -- so an unbounded wait leaves a police
+      // car stopped in the load's own lane at the junction it was sent ahead to
+      // hold, which is the exact failure the leapfrog exists to prevent. It has
+      // been running lights for the last quarter mile and every other approach
+      // is stopped; past a few seconds, or once the load is genuinely closing,
+      // it takes the gap it has made.
+      const clear = this.laneClear(unit, spot.lateral);
+      unit.blockWait = clear ? 0 : unit.blockWait + dt;
+      const committed = clear || unit.blockWait > 8;
+      // Where it waits matters as much as that it waits. Holding wherever it
+      // happened to stop leaves it in the lane the load is routed down; the
+      // shoulder on its own side is out of everybody's way and is where a car
+      // waiting for a gap actually sits.
+      unit.holdAt(dt, spot.s, committed ? spot.lateral : this.waitLateral(b, unit));
       // Getting there means sweeping across the carriageway with the lights on,
       // and for those few seconds the unit owns the whole road, not just the
       // mouth of the side street. Once it is parked the highway reopens and only

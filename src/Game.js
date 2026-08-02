@@ -417,7 +417,12 @@ export class Game {
    */
   placeRoadVehicle(mesh, pose, heading, { brake = false, hazard = false } = {}) {
     const p = pose.position;
-    mesh.position.set(p.x, this.ground.heightAt(p.x, p.z), p.z);
+    // Sat on the paved surface, taken from the pose's own elevation rather than
+    // from a terrain query. The pose is already a point on the route, so its
+    // height is the road's -- asking the ground for it again costs a projection
+    // per vehicle per frame and answers a question we have the answer to. The
+    // camber is the same shed the road mesh and the physics both use.
+    mesh.position.set(p.x, p.y - Math.abs(pose.lateral ?? 0) * 0.02, p.z);
     _e.set(pose.pitch, heading, 0, 'YXZ');
     mesh.quaternion.setFromEuler(_e);
 
@@ -534,8 +539,10 @@ export class Game {
           entry = { kind: c.kind, mesh: this.acquireVehicle(c.kind, (i * 0.41 + b.queueSeed) % 1) };
           this.blockadeVisuals.set(key, entry);
         }
-        const h = this.ground.heightAt(c.position.x, c.position.z);
-        entry.mesh.position.set(c.position.x, h, c.position.z);
+        // On the side road's own surface, which is a flat apron at the junction's
+        // elevation rather than the terrain -- the same plane the pavement mesh
+        // is built on, so the queue sits on the road instead of in the verge.
+        entry.mesh.position.copy(c.position);
         entry.mesh.rotation.y = c.heading;
         // Only render the queue while the convoy is close enough to see it.
         entry.mesh.visible = Math.abs(b.s - this.convoyS) < 500;
