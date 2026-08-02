@@ -7,7 +7,9 @@ import { TRUCK_TIRE, STEER_TIRE } from './Tire.js';
 
 const GRAVITY = new Vector3(0, -9.81, 0);
 const LOCAL_FWD = new Vector3(0, 0, 1);
-const LOCAL_RIGHT = new Vector3(1, 0, 0);
+// Right-handed frame, +Y up, rig facing +Z: the driver's right is -X. See the
+// note on LOCAL_RIGHT in Vehicle.js.
+const LOCAL_RIGHT = new Vector3(-1, 0, 0);
 const _tmp = new Vector3();
 
 const N_TO_LB = 0.2248089431;
@@ -82,6 +84,9 @@ export class Rig {
     this.trailerSteerInput = 0; // steerman control for the rear axle group
     this.trailerSteerAngle = 0;
     this.maxTrailerSteer = 0.44;
+    // With this on, the rear axle group steers itself against the articulation
+    // instead of waiting for the steerman's box. Q and E still override it.
+    this.autoTrailerSteer = true;
     this.diffLock = false;
 
     this.wheelbase = 5.10;
@@ -279,9 +284,15 @@ export class Rig {
    * Ackermann steering: the inside wheel turns more sharply than the outside so
    * both trace the same turn centre. On a long-wheelbase tractor this is very
    * visible at full lock.
+   *
+   * This is the one place a driver input becomes a wheel angle, so it is also
+   * the one place the sign flip lives. `steerInput` is +1 for right because that
+   * is what the right arrow key means; a right turn is a negative rotation
+   * about +Y (see LOCAL_RIGHT in Vehicle.js), and every steer angle from here
+   * down is that raw rotation.
    */
   applySteering(dt) {
-    const target = this.steerInput * this.maxSteerAngle;
+    const target = -this.steerInput * this.maxSteerAngle;
     const delta = target - this.steerAngle;
     const maxStep = this.steerRate * dt;
     this.steerAngle += Math.max(-maxStep, Math.min(maxStep, delta));
@@ -295,17 +306,56 @@ export class Rig {
       const inner = Math.atan(this.wheelbase / (R - this.steerTrack / 2));
       const outer = Math.atan(this.wheelbase / (R + this.steerTrack / 2));
       for (const w of steerWheels) {
+        // The inner wheel is the one on the side being turned toward. A left
+        // turn is a positive angle and the left-hand wheel sits at +X.
         const isInner = Math.sign(w.position.x) === sign;
         w.steerAngle = sign * (isInner ? inner : outer);
       }
     }
 
     // Trailer rear steer, with self-centring when released.
-    const tTarget = this.trailerSteerInput * this.maxTrailerSteer;
+    const tTarget = this.trailerSteerTarget();
     this.trailerSteerAngle += (tTarget - this.trailerSteerAngle) * Math.min(1, 2.2 * dt);
     for (const w of this.trailer.wheels) {
       if (w.tandemSteer) w.steerAngle = this.trailerSteerAngle;
     }
+  }
+
+  /**
+   * Where the lowboy's rear axle group is being asked to point, as a rotation
+   * about +Y like every other steer angle.
+   *
+   * Manual first: any input on the steerman's box wins, so grabbing Q or E in
+   * the middle of a corner takes the axles off the automatics immediately
+   * rather than fighting them.
+   */
+  trailerSteerTarget() {
+    if (Math.abs(this.trailerSteerInput) > 0.02) {
+      return -this.trailerSteerInput * this.maxTrailerSteer;
+    }
+    return this.autoTrailerSteer ? this.steermanAngle() : 0;
+  }
+
+  /**
+   * The angle a steerman would be holding: the one that stops the lowboy's rear
+   * axles cutting inside the tractor's path.
+   *
+   * For a trailer whose rear axle group is steerable, the rear axles trace the
+   * same radius as the gooseneck when they are turned to minus the articulation
+   * angle -- the tail is pushed out of the corner by exactly as much as it would
+   * otherwise have cut into it. That is a geometric result, not a tuned number,
+   * which is why there is no gain on it.
+   *
+   * Authority fades out with speed. A rear axle group steering itself at road
+   * speed does not shorten anything, it just wags the tail of a 212,000 lb load,
+   * and the real command-steer boxes lock out for the same reason.
+   */
+  steermanAngle() {
+    const mph = this.speedMph;
+    const authority = 1 - Math.max(0, Math.min(1, (mph - 12) / 13));
+    if (authority <= 0) return 0;
+    const target = -this.yawB.angle * authority;
+    return Math.max(-this.maxTrailerSteer, Math.min(this.maxTrailerSteer, target));
   }
 
   /** Average angular velocity of the drive wheels, rad/s. */
@@ -402,7 +452,7 @@ export class Rig {
     let rightTotal = 0;
     for (const w of t.wheels) {
       if (w.lifted) continue;
-      const left = w.position.x < 0;
+      const left = w.position.x > 0; // +X is the left-hand side of the deck
       if (left) { leftTotal++; if (!w.grounded) leftUp++; }
       else { rightTotal++; if (!w.grounded) rightUp++; }
     }
@@ -428,17 +478,41 @@ export class Rig {
     return b.specificForce.dot(_tmp);
   }
 
-  /** Per-axle scale weights, the way a permit officer would read them. */
+  /**
+   * Per-axle scale weights, the way a permit officer would read them.
+   *
+   * The lowboy is broken out axle by axle rather than totalled, because on a
+   * multi-axle trailer the total is not the number anybody is arguing about --
+   * a group can be legal on its total and still be over on one axle, and
+   * lifting an axle moves several thousand pounds onto its neighbours in front
+   * of you. Each row carries the flags the readout needs to say why an axle is
+   * doing something unusual.
+   */
   axleWeights() {
     const groups = [];
-    const push = (label, wheels) => {
+    const push = (label, wheels, extra = {}) => {
       const n = wheels.reduce((s, w) => s + w.load, 0);
-      groups.push({ label, lb: n * N_TO_LB, n });
+      groups.push({ label, lb: n * N_TO_LB, n, ...extra });
     };
     push('Steer', this.tractor.wheels.filter((w) => w.position.z > 0));
     push('Drives', this.tractor.wheels.filter((w) => w.position.z < 0));
     push('Jeep', this.jeep.wheels);
-    push('Lowboy', this.trailer.wheels);
+
+    // Group the lowboy's wheels by axle, front to back.
+    const byAxle = new Map();
+    for (const w of this.trailer.wheels) {
+      const key = w.position.z.toFixed(2);
+      if (!byAxle.has(key)) byAxle.set(key, []);
+      byAxle.get(key).push(w);
+    }
+    [...byAxle.values()]
+      .sort((a, b) => b[0].position.z - a[0].position.z)
+      .forEach((wheels, i) => {
+        push(`Lowboy ${i + 1}`, wheels, {
+          lifted: wheels.every((w) => w.lifted),
+          steered: wheels.some((w) => w.tandemSteer),
+        });
+      });
     return groups;
   }
 

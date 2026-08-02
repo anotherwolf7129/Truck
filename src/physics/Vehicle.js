@@ -15,12 +15,30 @@ const _n = new Vector3();
 
 const LOCAL_UP = new Vector3(0, 1, 0);
 const LOCAL_FWD = new Vector3(0, 0, 1);
-const LOCAL_RIGHT = new Vector3(1, 0, 0);
+
+/**
+ * The one handedness fact the whole simulation hangs off.
+ *
+ * Three.js is right-handed. With +Y up and the rig facing +Z, the driver's
+ * right-hand side is `forward x up`, which is -X -- not +X, however much the
+ * axis label suggests otherwise. Two things follow, and both have been got
+ * wrong here before:
+ *
+ *   - a wheel's local -X side is the kerb side, its +X side the centreline side;
+ *   - a rotation about +Y is counter-clockwise seen from above, so a *positive*
+ *     steer angle turns the rig LEFT.
+ *
+ * Every steer angle in the physics is stored as that raw rotation about +Y, so
+ * it can be handed straight to `applyAxisAngle` and to the wheel meshes without
+ * a sign flip hiding somewhere in between. Rig.applySteering is the single
+ * place that turns a driver input ("+1 is right") into one.
+ */
+const LOCAL_RIGHT = new Vector3(-1, 0, 0);
 
 /**
  * One wheel: a raycast suspension strut, a tire, and a brake.
  *
- * Positions are in the parent unit's local frame, with +Z forward, +X right and
+ * Positions are in the parent unit's local frame, with +Z forward, -X right and
  * +Y up.
  */
 export class Wheel {

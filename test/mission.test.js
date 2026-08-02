@@ -81,7 +81,8 @@ function runMission({ maxMinutes = 45, useEngineBrake = true } = {}) {
     const aimS = s + Math.max(18, Math.abs(rig.speedMph) * 1.5);
     const aim = route.positionAt(aimS, route.convoyLaneOffset(aimS), new Vector3());
     const fwd = rig.tractor.body.localToWorldDir(new Vector3(0, 0, 1), new Vector3());
-    const right = rig.tractor.body.localToWorldDir(new Vector3(1, 0, 0), new Vector3());
+    // Facing +Z in a right-handed frame, the rig's right-hand side is -X.
+    const right = rig.tractor.body.localToWorldDir(new Vector3(-1, 0, 0), new Vector3());
     const toAim = aim.sub(p);
     const steer = Math.atan2(toAim.dot(right), Math.max(1, toAim.dot(fwd)));
     rig.steerInput = Math.max(-1, Math.min(1, steer * 2.2));

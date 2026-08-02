@@ -22,6 +22,7 @@ export class Input {
       brake: ['KeyS', 'ArrowDown'],
       trailerLeft: ['KeyQ'],
       trailerRight: ['KeyE'],
+      steerman: ['KeyG'],
       shiftUp: ['ShiftLeft', 'ShiftRight'],
       shiftDown: ['ControlLeft', 'ControlRight'],
       engineBrake: ['KeyB'],
