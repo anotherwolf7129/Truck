@@ -70,6 +70,7 @@ export class Game {
     // own geometry and paint -- so they are handed back and reused rather than
     // dropped on the floor for the GPU to accumulate.
     this.vehiclePool = new Map();
+    this.prewarmVehicles();
 
     // --- State ---------------------------------------------------------------
     this.convoyS = 0;
@@ -467,6 +468,25 @@ export class Game {
   }
 
   /**
+   * Builds a road's worth of traffic up front and parks it in the pool.
+   *
+   * A car is a dozen geometries, a merge pass and a shader compile the first
+   * time its material is seen. Doing that the instant a vehicle spawns puts all
+   * of it inside one frame, and a car appearing over the crest ahead is exactly
+   * when a stutter is least welcome. The pool is filled at load instead, where
+   * there is already a loading screen to hide it.
+   */
+  prewarmVehicles() {
+    for (let i = 0; i < 16; i++) this.releaseVehicle('car', createTrafficVehicle('car', i / 16));
+    for (let i = 0; i < 6; i++) this.releaseVehicle('truck', createTrafficVehicle('truck', i / 6));
+    // Everything in the pool starts hidden but parented, so the first frame a
+    // vehicle is used is a transform update rather than a scene-graph insert.
+    for (const list of this.vehiclePool.values()) {
+      for (const mesh of list) this.render.scene.add(mesh);
+    }
+  }
+
+  /**
    * Takes a vehicle mesh of the given kind from the pool, or builds one.
    *
    * Pooled cars keep whatever paint they were built with, which is fine -- the
@@ -733,6 +753,7 @@ export class Game {
       // toggle checked in there could never be seen again once it had fired.
       if (this.input.tapped('pause')) this.setPaused(!this.paused);
       if (!this.paused) this.update(dt);
+      this.render.adaptResolution(dt);
       this.render.render();
       this.input.endFrame();
 
