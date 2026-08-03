@@ -109,6 +109,14 @@ const CONVOY_TAIL = 450;
 // trying to move through.
 const MAINLINE_STOP_BACK = 35;
 
+/** Seconds between spawns on each kind of road, before the density multiplier. */
+const SPAWN_INTERVAL = {
+  downtown: 0.7, urban: 0.9, freeway: 0.6, ramp: 1.8, industrial: 2.0,
+};
+
+/** How many vehicles are allowed on screen at once, relative to the base cap. */
+const FLEET_SCALE = { downtown: 1.6, urban: 1.5, freeway: 1.8, ramp: 1.0, industrial: 0.8 };
+
 /** Half the width of the intersection box, along the highway. */
 export function intersectionHalfLength(junction) {
   return junction.signal ? 8.5 : 5.0;
@@ -567,13 +575,14 @@ export class TrafficManager {
   /**
    * How much traffic this stretch of road carries.
    *
-   * A suburban arterial is busier than a county highway and much busier than a
-   * fire road over a ridge, and the difference is most of what makes the drive
-   * into town feel like arriving somewhere.
+   * Downtown is busier than an arterial, which is busier than the industrial
+   * road out to the yard, and an interstate carries more than any of them
+   * because it is three lanes each way. The difference is most of what makes
+   * each leg of the route feel like a different part of the city.
    */
   spawnInterval(s) {
     const kind = this.route.kindAt(s);
-    const base = kind === 'suburban' ? 0.85 : kind === 'mountain' ? 2.6 : 1.4;
+    const base = SPAWN_INTERVAL[kind] ?? 1.4;
     return base / Math.max(0.2, this.density);
   }
 
@@ -586,9 +595,7 @@ export class TrafficManager {
       return Math.abs(v.s - convoyS) < this.despawnWindow;
     });
 
-    const cap = this.route.kindAt(convoyS) === 'suburban'
-      ? Math.round(this.maxVehicles * 1.5)
-      : this.maxVehicles;
+    const cap = Math.round(this.maxVehicles * (FLEET_SCALE[this.route.kindAt(convoyS)] ?? 1));
 
     this._spawnTimer -= dt;
     if (this._spawnTimer <= 0 && this.vehicles.length < cap) {

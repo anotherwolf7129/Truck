@@ -33,7 +33,11 @@ for (let s = STEP; s <= route.length; s += STEP) {
   while (d < -Math.PI) d += Math.PI * 2;
   prev = h;
 
-  const rate = d / STEP;                     // radians per metre
+  // Radians per metre, positive to the left: heading is a rotation about +Y
+  // and a positive rotation about +Y turns left. The label below used to have
+  // this backwards, which made every corner on the route read as the opposite
+  // of the turn the survey actually declares.
+  const rate = d / STEP;
   const turning = Math.abs(rate) > 1 / 900;  // radius under 900 m counts
 
   if (turning && open && Math.sign(rate) === open.sign) {
@@ -57,7 +61,7 @@ for (const c of corners) {
   const radius = 1 / c.peak;
   const mid = (c.from + c.to) / 2;
   console.log(
-    `  ${c.sign > 0 ? 'right' : 'left '}    ${String(Math.round(mid)).padStart(6)} m  `
+    `  ${c.sign > 0 ? 'left ' : 'right'}    ${String(Math.round(mid)).padStart(6)} m  `
     + `${deg.toFixed(0).padStart(5)} deg  ${radius.toFixed(0).padStart(8)} m  `
     + `${route.advisorySpeedAt(mid).toFixed(0).padStart(6)} mph`
   );

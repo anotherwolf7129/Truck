@@ -110,6 +110,29 @@ export function lampMaterial(color, intensity = 3) {
   return new MeshBasicMaterial({ color: new Color(color).multiplyScalar(intensity) });
 }
 
+const SHARED_MATERIALS = new Set(Object.values(materials));
+
+/**
+ * Throws away a model built by this module.
+ *
+ * Changing trailers rebuilds the whole combination, and every welded mesh owns
+ * its own merged buffer -- so dropping the old one on the floor leaks a few
+ * megabytes of GPU memory per swap. The shared materials are deliberately left
+ * alone: they are the same objects every vehicle in the world is drawn with,
+ * and disposing one would take the traffic with it.
+ */
+export function disposeModel(object) {
+  object.traverse((node) => {
+    if (!node.isMesh) return;
+    node.geometry?.dispose();
+    for (const mat of Array.isArray(node.material) ? node.material : [node.material]) {
+      if (!mat || SHARED_MATERIALS.has(mat)) continue;
+      mat.map?.dispose();
+      mat.dispose();
+    }
+  });
+}
+
 // Box geometries are shared between every part that wants the same size. A road
 // full of traffic is a lot of identical body panels, and each one used to be its
 // own buffer.
@@ -256,21 +279,34 @@ export function createTractor() {
 // Jeep dolly
 // -----------------------------------------------------------------------------
 
-/** The two-axle jeep that spreads load between the tractor and the lowboy. */
-export function createJeep() {
+/**
+ * The jeep dolly that spreads load between the tractor and the trailer.
+ *
+ * Two axles under a lowboy, four under a dual-lane platform -- so the frame is
+ * drawn to whatever the spec declares rather than to one length.
+ */
+export function createJeep(spec) {
   const g = new Group();
   const w = new Weld();
+  const back = spec.axleZ[spec.axleZ.length - 1] - 0.5;
+  const railLen = spec.kingpinZ - back;
+  const railMid = (spec.kingpinZ + back) * 0.5;
+
   for (const side of [-0.52, 0.52]) {
-    w.add(boxGeometry(0.18, 0.30, 4.6, 0.02), materials.frame, { x: side, y: -0.30, z: -0.6 });
+    w.add(boxGeometry(0.18, 0.30, railLen, 0.02), materials.frame, { x: side, y: -0.30, z: railMid });
   }
-  w.add(boxGeometry(1.5, 0.16, 2.2, 0.02), materials.frame, { y: -0.10, z: -0.9 });
+  w.add(boxGeometry(1.5, 0.16, railLen * 0.5, 0.02), materials.frame, {
+    y: -0.10, z: (spec.fifthWheelZ + back) * 0.5,
+  });
 
   // Kingpin plate up front, fifth wheel at the rear.
-  w.add(boxGeometry(1.0, 0.10, 0.9, 0.03), materials.darkMetal, { y: 0.28, z: 2.10 });
-  w.add(boxGeometry(1.05, 0.10, 0.95, 0.03), materials.darkMetal, { y: 0.29, z: -0.30 });
+  w.add(boxGeometry(1.0, 0.10, 0.9, 0.03), materials.darkMetal, { y: 0.28, z: spec.kingpinZ });
+  w.add(boxGeometry(1.05, 0.10, 0.95, 0.03), materials.darkMetal, { y: 0.29, z: spec.fifthWheelZ });
 
   // Gooseneck reach beam
-  w.add(boxGeometry(0.5, 0.34, 2.6, 0.03), materials.frame, { y: 0.05, z: 0.95 });
+  w.add(boxGeometry(0.5, 0.34, spec.kingpinZ - spec.fifthWheelZ, 0.03), materials.frame, {
+    y: 0.05, z: (spec.kingpinZ + spec.fifthWheelZ) * 0.5,
+  });
   return w.build(g);
 }
 
@@ -279,112 +315,123 @@ export function createJeep() {
 // -----------------------------------------------------------------------------
 
 /**
- * A four-axle lowboy with a dropped well deck, plus the load sitting on it.
+ * Whatever the yard has put under the load, built from its spec.
  *
- * The deck sits about 0.55 m off the road, which is the whole point of the
- * trailer: it buys back nearly a metre of vertical clearance so a tall load can
- * still get under bridges.
+ * One builder covers a three-axle step deck, a lowboy on a jeep, a twenty-axle
+ * dual-lane platform and a seventy-metre blade cradle, because structurally they
+ * are the same four things: a neck reaching forward to the coupling, a deck, a
+ * bogie under the back of it, and a load strapped on top. What differs is how
+ * long each of those is, and that is all declared.
  */
-export function createLowboy(cargo, comHeight) {
+export function createTrailer(spec, comHeight) {
   const g = new Group();
   const y = (world) => world - comHeight;   // world height -> local
   const w = new Weld();
 
-  // Gooseneck: rises from the deck up to the coupling height.
-  w.add(boxGeometry(1.6, 0.85, 2.6, 0.05), materials.frame, { y: y(1.05), z: 5.5, rx: 0.16 });
-  w.add(boxGeometry(1.3, 0.55, 1.5, 0.04), materials.frame, { y: y(1.16), z: 6.5 });
+  const deckTop = spec.deckHeight;
+  const deckY = y(deckTop);
+  const deckLen = spec.deckFrom - spec.deckTo;
+  const deckMid = (spec.deckFrom + spec.deckTo) * 0.5;
+  const halfDeck = spec.deckWidth * 0.5;
 
-  // Well deck
-  const deckY = y(0.55);
-  w.add(boxGeometry(3.05, 0.22, 9.4, 0.02), materials.deck, { y: deckY, z: 0.4 });
-  for (const side of [-1.32, 1.32]) {
-    w.add(boxGeometry(0.28, 0.46, 9.8, 0.03), materials.frame, { x: side, y: deckY - 0.10, z: 0.4 });
-  }
+  // --- Neck ----------------------------------------------------------------
+  // Everything from the front of the deck forward to the pin. On a lowboy that
+  // is a two metre gooseneck; on the dual-lane platform it is a thirteen metre
+  // drawbar, and on the blade trailer a thirty metre one. Same beam, different
+  // length, lifted to whatever slope the coupling height implies.
+  const neckFrom = spec.deckFrom - 0.4;
+  const neckTo = spec.couplingZ - 0.5;
+  const rise = 1.329 - (deckTop + 0.35);
+  const run = Math.max(0.5, neckTo - neckFrom);
+  const neckLen = Math.hypot(run, rise);
+  w.add(boxGeometry(1.5, 0.6, neckLen, 0.05), materials.frame, {
+    y: y(deckTop + 0.35 + rise * 0.5), z: (neckFrom + neckTo) * 0.5,
+    rx: -Math.atan2(rise, run),
+  });
+  // Kingpin plate at the end of it.
+  w.add(boxGeometry(1.25, 0.45, 1.2, 0.04), materials.frame, { y: y(1.16), z: spec.couplingZ });
 
-  // Rear axle bogie frame
-  w.add(boxGeometry(2.9, 0.5, 5.4, 0.04), materials.frame, { y: y(0.95), z: -6.1 });
-
-  // Outriggers, which is how the deck gets wide enough for an oversize load.
-  for (const z of [3.4, 1.2, -1.0, -3.0]) {
-    w.add(boxGeometry(3.9, 0.10, 0.22, 0.02), materials.frame, { y: deckY + 0.13, z });
-  }
-
-  // --- The load ----------------------------------------------------------
-  const cw = cargo.size.x;
-  const ch = cargo.size.y;
-  const cd = cargo.size.z;
-  const cargoY = y(cargo.centerHeight);
-  const cargoZ = 0.4;
-
-  w.add(boxGeometry(cw, ch, cd, 0.06), materials.cargoSteel, { y: cargoY, z: cargoZ });
-
-  // Transformer detailing: radiator banks down the sides, bushings on top.
+  // --- Deck ----------------------------------------------------------------
+  w.add(boxGeometry(spec.deckWidth, 0.22, deckLen, 0.02), materials.deck, { y: deckY, z: deckMid });
   for (const side of [-1, 1]) {
-    for (let i = -2; i <= 2; i++) {
-      w.add(boxGeometry(0.16, ch * 0.62, 0.34, 0.02), materials.cargoAccent, {
-        x: side * (cw / 2 + 0.10), y: cargoY - ch * 0.05, z: cargoZ + i * (cd / 6),
-      });
-    }
+    w.add(boxGeometry(0.28, 0.46, deckLen + 0.4, 0.03), materials.frame, {
+      x: side * (halfDeck - 0.15), y: deckY - 0.10, z: deckMid,
+    });
   }
-  const bushingGeo = new ConeGeometry(0.20, 0.85, 8);
-  for (const x of [-cw * 0.28, 0, cw * 0.28]) {
-    w.add(bushingGeo, materials.cargoAccent, { x, y: cargoY + ch / 2 + 0.42, z: cargoZ + cd * 0.22 });
-  }
-  bushingGeo.dispose();
 
-  // Lifting lugs
-  const lugGeo = new TorusGeometry(0.14, 0.035, 5, 9);
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
-      w.add(lugGeo, materials.darkMetal, {
-        x: sx * cw * 0.38, y: cargoY + ch / 2 + 0.10, z: cargoZ + sz * cd * 0.36,
-        ry: Math.PI / 2,
-      });
-    }
-  }
-  lugGeo.dispose();
+  // --- Bogies ---------------------------------------------------------------
+  // A frame over each run of axles, so the wheels have something to hang from.
+  const axleZ = spec.axles.map((a) => a.z);
+  const bogieFrom = Math.max(...axleZ) + 0.8;
+  const bogieTo = Math.min(...axleZ) - 0.8;
+  w.add(boxGeometry(spec.deckWidth * 0.95, 0.5, bogieFrom - bogieTo, 0.04), materials.frame, {
+    y: y(deckTop + 0.4), z: (bogieFrom + bogieTo) * 0.5,
+  });
 
-  // Chain tie-downs from the deck up over the load.
-  const chainGeo = new CylinderGeometry(0.028, 0.028, ch * 0.95, 5);
+  // --- Outriggers -----------------------------------------------------------
+  // How the deck gets wide enough for a load that is wider than it is.
+  const spread = Math.max(spec.deckWidth, spec.cargo.size.x + 0.6);
+  const outriggers = Math.max(2, Math.round(deckLen / 3));
+  for (let i = 0; i < outriggers; i++) {
+    const z = spec.deckFrom - 0.6 - (i * (deckLen - 1.2)) / Math.max(1, outriggers - 1);
+    w.add(boxGeometry(spread, 0.10, 0.22, 0.02), materials.frame, { y: deckY + 0.13, z });
+  }
+
+  // --- The load -------------------------------------------------------------
+  addCargo(w, spec.cargo, y);
+
+  // Chain tie-downs from the deck up over it.
+  const cargo = spec.cargo;
+  const chainGeo = new CylinderGeometry(0.028, 0.028, cargo.size.y * 0.95, 5);
   for (const sz of [-1, 1]) {
     for (const sx of [-1, 1]) {
       w.add(chainGeo, materials.darkMetal, {
-        x: sx * (cw / 2 + 0.22), y: cargoY - ch * 0.05, z: 0.4 + sz * cd * 0.34,
+        x: sx * (cargo.size.x / 2 + 0.22),
+        y: y(cargo.centerHeight - cargo.size.y * 0.05),
+        z: cargo.z + sz * Math.min(cargo.size.z * 0.34, deckLen * 0.35),
         rz: sx * 0.34,
       });
     }
   }
   chainGeo.dispose();
 
-  // Flags on the corners.
+  // Flags on the back corners of whatever sticks out furthest.
+  const tail = Math.min(spec.tailZ, cargo.z - cargo.size.z * 0.5) + 0.4;
   const flagMat = new MeshBasicMaterial({ color: 0xd8232a, side: DoubleSide });
   const flagGeo = new PlaneGeometry(0.45, 0.45);
   for (const sx of [-1, 1]) {
     w.add(flagGeo, flagMat, {
-      x: sx * (cw / 2 + 0.28), y: y(cargo.centerHeight + ch * 0.55), z: -cd * 0.42,
-      ry: Math.PI / 2,
+      x: sx * (cargo.size.x / 2 + 0.28),
+      y: y(cargo.centerHeight + cargo.size.y * 0.55),
+      z: tail, ry: Math.PI / 2,
     });
   }
   flagGeo.dispose();
 
-  // Amber clearance lights along the outriggers and across the tail.
+  // Amber clearance lights down both sides of the deck.
   const markerMat = lampMaterial(0xffa63a, 1);
+  const markers = Math.max(2, Math.round(deckLen / 4));
   for (const sx of [-1, 1]) {
-    for (const z of [3.6, 0.4, -3.2, -7.4]) {
-      w.add(boxGeometry(0.10, 0.06, 0.06, 0), markerMat, { x: sx * 1.98, y: deckY + 0.22, z });
+    for (let i = 0; i < markers; i++) {
+      const z = spec.deckFrom - (i * deckLen) / Math.max(1, markers - 1);
+      w.add(boxGeometry(0.10, 0.06, 0.06, 0), markerMat, {
+        x: sx * (spread * 0.5 - 0.02), y: deckY + 0.22, z,
+      });
     }
   }
   w.build(g);
 
   // OVERSIZE LOAD banner across the back. Its own texture, so its own mesh.
-  const banner = makeBanner('OVERSIZE LOAD', 3.4, 0.62);
-  g.add(place(banner, 0, y(1.9), -8.9));
+  const banner = makeBanner('OVERSIZE LOAD', Math.min(3.4, cargo.size.x), 0.62);
+  g.add(place(banner, 0, y(Math.min(1.9, deckTop + 1.1)), tail - 0.05));
   banner.rotation.y = Math.PI;
 
   const tailMat = lampMaterial(0xff2a1a, 0.6);
   const tails = new Weld();
   for (const sx of [-1, 1]) {
-    tails.add(boxGeometry(0.22, 0.14, 0.06, 0), tailMat, { x: sx * 1.2, y: y(1.0), z: -8.95 });
+    tails.add(boxGeometry(0.22, 0.14, 0.06, 0), tailMat, {
+      x: sx * Math.min(1.2, cargo.size.x * 0.4), y: y(deckTop + 0.45), z: tail - 0.1,
+    });
   }
   const tailGroup = new Group();
   tails.build(tailGroup);
@@ -392,6 +439,123 @@ export function createLowboy(cargo, comHeight) {
   g.userData.tailLights = tailGroup.children;
 
   return g;
+}
+
+/**
+ * The load itself.
+ *
+ * Each kind gets the handful of features that make it recognisable from the cab
+ * mirror -- the radiator banks on a transformer, the boom folded over an
+ * excavator, the flanges on a girder, the taper of a blade -- and nothing else.
+ * A box with the right silhouette reads as the thing; a box does not.
+ */
+function addCargo(w, cargo, y) {
+  const cw = cargo.size.x;
+  const ch = cargo.size.y;
+  const cd = cargo.size.z;
+  const cy = y(cargo.centerHeight);
+  const cz = cargo.z;
+
+  switch (cargo.kind) {
+    case 'excavator': {
+      // Track frames, house, cab and the boom folded back over the deck.
+      for (const sx of [-1, 1]) {
+        w.add(boxGeometry(0.75, 0.95, cd * 0.92, 0.06), materials.darkMetal, {
+          x: sx * (cw / 2 - 0.42), y: y(cargo.centerHeight - ch * 0.35), z: cz,
+        });
+      }
+      w.add(boxGeometry(cw * 0.86, ch * 0.42, cd * 0.55, 0.08), materials.cargoAccent, {
+        y: y(cargo.centerHeight + ch * 0.05), z: cz - cd * 0.16,
+      });
+      w.add(boxGeometry(1.15, ch * 0.44, 1.5, 0.10), materials.glass, {
+        x: cw * 0.22, y: y(cargo.centerHeight + ch * 0.34), z: cz + cd * 0.14,
+      });
+      // Boom and dipper, laid down along the deck the way one travels.
+      w.add(boxGeometry(0.55, 0.62, cd * 0.62, 0.05), materials.cargoSteel, {
+        x: -cw * 0.10, y: y(cargo.centerHeight + ch * 0.18), z: cz + cd * 0.22, rx: 0.12,
+      });
+      w.add(boxGeometry(0.48, 0.5, cd * 0.34, 0.05), materials.cargoSteel, {
+        x: -cw * 0.10, y: y(cargo.centerHeight - ch * 0.02), z: cz + cd * 0.42, rx: -0.22,
+      });
+      break;
+    }
+
+    case 'girder': {
+      // Two plate girders side by side: flanges top and bottom, a deep web
+      // between them, and cross bracing so they travel as one piece.
+      for (const sx of [-1, 1]) {
+        const x = sx * cw * 0.26;
+        for (const dy of [ch * 0.46, -ch * 0.46]) {
+          w.add(boxGeometry(cw * 0.4, 0.10, cd, 0.01), materials.cargoSteel, { x, y: cy + dy, z: cz });
+        }
+        w.add(boxGeometry(0.06, ch * 0.9, cd, 0), materials.cargoAccent, { x, y: cy, z: cz });
+      }
+      const braces = Math.round(cd / 6);
+      for (let i = 0; i <= braces; i++) {
+        const z = cz - cd / 2 + (i * cd) / braces;
+        w.add(boxGeometry(cw * 0.5, 0.14, 0.14, 0), materials.darkMetal, { y: cy, z });
+      }
+      break;
+    }
+
+    case 'blade': {
+      // A blade is a long tapering aerofoil: a cylindrical root, then segments
+      // that lose chord and thickness the whole way to the tip. Twelve of them
+      // is enough that the silhouette reads as a blade rather than a pole.
+      const root = new CylinderGeometry(cw * 0.32, cw * 0.32, 1.6, 10);
+      w.add(root, materials.paintWhite, { y: cy, z: cz + cd / 2 - 0.8, rx: Math.PI / 2 });
+      root.dispose();
+
+      const segments = 12;
+      for (let i = 0; i < segments; i++) {
+        const t0 = i / segments;
+        const t1 = (i + 1) / segments;
+        const mid = (t0 + t1) * 0.5;
+        // Chord swells just outboard of the root and then tapers away.
+        const chord = cw * (0.62 + 0.38 * Math.sin(Math.min(1, mid * 3) * Math.PI * 0.5)) * (1 - mid * 0.86);
+        const thick = ch * (1 - mid * 0.9) * 0.55;
+        const len = cd * (t1 - t0);
+        w.add(boxGeometry(Math.max(0.12, thick), Math.max(0.12, chord), len, 0.06),
+          materials.paintWhite,
+          { y: cy + chord * 0.1, z: cz + cd / 2 - 1.6 - (mid * (cd - 1.6)), rz: mid * 0.12 });
+      }
+      // Cradles under it, which is what a blade actually rides on.
+      for (const t of [0.12, 0.42, 0.72]) {
+        w.add(boxGeometry(cw * 0.9, 0.5, 0.6, 0.04), materials.frame, {
+          y: cy - ch * 0.42, z: cz + cd / 2 - t * cd,
+        });
+      }
+      break;
+    }
+
+    default: {
+      // A transformer: a slab-sided steel tank with radiator banks down each
+      // side, bushings on top and lifting lugs on the corners.
+      w.add(boxGeometry(cw, ch, cd, 0.06), materials.cargoSteel, { y: cy, z: cz });
+      for (const side of [-1, 1]) {
+        for (let i = -2; i <= 2; i++) {
+          w.add(boxGeometry(0.16, ch * 0.62, 0.34, 0.02), materials.cargoAccent, {
+            x: side * (cw / 2 + 0.10), y: cy - ch * 0.05, z: cz + i * (cd / 6),
+          });
+        }
+      }
+      const bushingGeo = new ConeGeometry(0.20, 0.85, 8);
+      for (const x of [-cw * 0.28, 0, cw * 0.28]) {
+        w.add(bushingGeo, materials.cargoAccent, { x, y: cy + ch / 2 + 0.42, z: cz + cd * 0.22 });
+      }
+      bushingGeo.dispose();
+
+      const lugGeo = new TorusGeometry(0.14, 0.035, 5, 9);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          w.add(lugGeo, materials.darkMetal, {
+            x: sx * cw * 0.38, y: cy + ch / 2 + 0.10, z: cz + sz * cd * 0.36, ry: Math.PI / 2,
+          });
+        }
+      }
+      lugGeo.dispose();
+    }
+  }
 }
 
 /** A canvas-drawn banner, used for OVERSIZE LOAD signage. */

@@ -15,20 +15,21 @@ await page.waitForTimeout(2000);
 // wants to be short of or past the thing itself. Stations written as numbers go
 // stale the first time a corner moves.
 const stops = [
-  ['start',      ['onto CH14', -180],   0,  'chase'],
-  ['highwayturn',['onto CH14', 40],     9,  'chase'],
-  ['junction',   ['Kesler Road', -20], 22,  'chase'],
-  ['bridge',     ['CR-9 overpass', -55], 20, 'chase'],
-  ['crossroads', ['CR9 turn', -60],     9,  'chase'],
-  ['climb',      ['onto Ridge Road', -120], 18, 'chase'],
-  ['switchback', ['switchback', 60],    8,  'trailer'],
-  ['descent',    ['grade top', 300],   20,  'chase'],
-  ['cab',        ['Valley settled', 200], 25, 'cab'],
-  ['townline',   ['town line', 40],    10,  'chase'],
-  ['arterial',   ['Beltline Connector', -120], 20, 'chase'],
-  ['signal',     ['Fairview Drive', -60], 9, 'hood'],
-  ['gate',       ['substation turn', 30], 8, 'chase'],
-  ['cinema',     ['Cloverdale Center', -200], 20, 'cinematic'],
+  ['start',      ['onto Dock Street', -200],  0,  'chase'],
+  ['dockturn',   ['onto Dock Street', 40],    8,  'chase'],
+  ['junction',   ['Pier 9 Road', -20],       22,  'chase'],
+  ['boulevard',  ['onto Harbor Boulevard', 40], 8, 'chase'],
+  ['viaduct',    ['Beacon Hill viaduct', -55], 20, 'chase'],
+  ['downtown',   ['Third Street', -60],       9,  'chase'],
+  ['hill',       ['onto Prospect Hill', -120], 14, 'chase'],
+  ['descent',    ['grade top', 300],         20,  'chase'],
+  ['loopramp',   ['ramp', 40],                7,  'trailer'],
+  ['freeway',    ['merge', 500],             40,  'chase'],
+  ['cab',        ['Junction 14 overpass', -300], 40, 'cab'],
+  ['exit',       ['exit', 120],              28,  'chase'],
+  ['signal',     ['Meridian & Canal', -60],   9,  'hood'],
+  ['gate',       ['substation turn', 30],     8,  'chase'],
+  ['cinema',     ['Third Street', 120],      12,  'cinematic'],
 ];
 
 for (const [name, [mark, offset], mph, cam] of stops) {

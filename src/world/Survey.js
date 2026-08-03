@@ -6,16 +6,16 @@ import { Vector3 } from 'three';
  *
  * The centreline used to be a list of forty-eight control points read off a
  * sketch. That is workable for a road that mostly goes one way, and it is how
- * this route came to have exactly three corners in seven and a half miles --
- * everything between the switchback and the valley bend was a curve of over a
- * kilometre's radius, which from the cab is a straight line. You cannot see a
- * radius in a list of coordinates, so nobody could see that they were all
- * enormous.
+ * that route came to have exactly three corners in seven and a half miles --
+ * everything between them was a curve of over a kilometre's radius, which from
+ * the cab is a straight line. You cannot see a radius in a list of coordinates,
+ * so nobody could see that they were all enormous.
  *
  * Stated as turns, the corner is the unit of design. A turn onto another road is
- * `right(88, 95)` and it is unambiguous that it is an eighty-eight degree turn
- * at ninety-five metres, which is a corner a 87 ft combination gets round with
- * the trailer's rear axles steering and nothing else on the road.
+ * `right(88, 66)` and it is unambiguous that it is an eighty-eight degree turn
+ * at sixty-six metres, which is a corner an 87 ft combination gets round with
+ * the trailer's rear axles steering, every approach to the intersection stopped,
+ * and both carriageways of the road it is turning into.
  *
  * The points come out at a fixed spacing so the spline that gets fitted through
  * them reproduces the arcs rather than rounding them off.

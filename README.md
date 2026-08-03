@@ -1,17 +1,18 @@
 # Heavy Haul
 
-A browser simulator for the kind of driving you described: a 212,000 lb superload
-on a multi-axle lowboy, with police units and pilot cars running as a convoy —
-blocking side roads ahead of you, holding traffic, and leapfrogging to the next
-junction once you are through.
+A browser simulator for the kind of driving you described: a superload on a
+multi-axle trailer, with police units and pilot cars running as a convoy —
+taking the lights ahead of you, blocking side roads, and leapfrogging to the
+next junction once you are through. Eight miles across a city, six turns at
+signalised intersections, and a run up the interstate in the middle of it.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
 ```
 
-`npm test` runs the physics, convoy and mission suites headlessly (no browser
-needed) — after `npm install`, since they import `three` directly.
+`npm test` runs the physics, trailer, convoy and mission suites headlessly (no
+browser needed) — after `npm install`, since they import `three` directly.
 
 ---
 
@@ -24,13 +25,67 @@ project is generated procedurally at load time, so the visuals are clean and
 readable rather than photoreal.
 
 What is genuinely simulated is the part that makes heavy haul feel different from
-driving a truck: the vehicle is a **multibody model**, not a single box with
-wheels, and the convoy is a **behavioural system**, not scripted animation.
+driving a truck: the combination is a **multibody model**, not a single box with
+wheels; the convoy is a **behavioural system**, not scripted animation; and what
+is behind the tractor is **declared rather than hard-coded**, so a three-axle
+step deck and a two-hundred-and-fifty-foot blade transporter are the same code
+with different numbers in it.
+
+## The yard
+
+Five trailers, and picking one is not a skin. It changes the number of rigid
+bodies in the combination, the number of axles the weight is spread over, how far
+the back of the thing is from the front of it, how far the rear group can be
+steered, and how many engines are pushing.
+
+| | Axles | Gross | Length | Height | The problem with it |
+|---|---|---|---|---|---|
+| **Step deck** | 3 | 145,000 lb | 64 ft | 13.2 ft | None, comparatively. No jeep, no rear steer, no steerman — it goes round a corner the way a truck does. |
+| **Lowboy + jeep** | 4 | 212,746 lb | 78 ft | 13.6 ft | The tallest centre of gravity in the yard. This is the one the rollover meter is for. |
+| **Beam trailer + jeep** | 6 | 242,729 lb | 180 ft | 13.2 ft | Fifteen metres of girder behind the last axle. The tail does not go where the deck goes. |
+| **Dual-lane transporter** | 20, in two lanes | 724,659 lb | 107 ft | 15.6 ft | 328 tonnes, twenty feet wide, four prime movers, and 30 cm under the rail bridge. |
+| **Blade transporter** | 5 | 135,584 lb | **249 ft** | 14.9 ft | It weighs less than the excavator and it is four times the length of the lowboy. Getting it round an intersection is the entire job. |
+
+`tools/haul.mjs` drives each of them over the whole route with the same
+unremarkable autopilot the mission test uses — hold the advisory speed, aim at
+the middle of the permitted lane, gear down on the descent — and reports the
+permit officer's sheet:
+
+```
+trailer     gross        length  outcome     min   rollover  brakes  off pavement  clearance  junctions
+
+stepdeck     144,844 lb    64 ft  delivered   33      0.32    144C        0.0 m      102 cm      16/16   pass
+lowboy       212,746 lb    78 ft  delivered   34      0.40    181C        0.0 m       90 cm      16/16   pass
+girder       242,729 lb   180 ft  delivered   36      0.35    170C        0.4 m      103 cm      16/16   pass
+duallane     724,659 lb   107 ft  delivered   34      0.24    216C        0.0 m       30 cm      16/16   pass
+blade        135,584 lb   249 ft  delivered   33      0.60    112C        2.2 m       50 cm      16/16   warn
+```
+
+Read across the rows rather than down them. The heaviest load is the *least*
+likely to go over, because a dual-lane platform is three metres out to each side
+and the rollover threshold is half the track over the height of the centre of
+gravity — its static stability factor is 1.24 against the lowboy's 0.47. What
+the big one does instead is cook its brakes and arrive at the rail bridge with a
+foot of air over it. And the long one, which weighs less than anything else in
+the yard, is the only one that cannot keep itself on the pavement through an
+intersection: 2.2 m of it ends up in the verge, which is the "warn" on its sheet.
+
+Everything in `physics/Trailers.js` is declared the way a permit is — the
+equipment, then the load — and everything else is derived from it. Where each
+unit stands at rest comes from the coupling chain and nothing else; the
+suspension mount height comes from the load's own centre of gravity; the length
+of the combination comes from whatever sticks out furthest. A trailer therefore
+cannot be declared with its wheels buried in the road or its kingpin a metre from
+the fifth wheel that is holding it, and `test/trailers.test.js` builds and drives
+every one of them to prove it.
+
+Pick one on the start screen, or with `?trailer=blade` in the address bar, or
+`game.setTrailer('duallane')` from the console.
 
 ## The rig
 
-Three rigid bodies, coupled at two pivots, so the combination actually
-articulates:
+Up to three rigid bodies, coupled at pivots, so the combination actually
+articulates. The default is the lowboy:
 
 | Unit | Mass | Detail |
 |---|---|---|
@@ -42,17 +97,18 @@ That layout is not decorative. Two pivot points are the minimum needed to
 reproduce the behaviour that defines this kind of driving — the trailer tracking
 well inside the tractor's path through a corner, the load pushing the drives
 around under braking, and the slow two-pivot sway that builds if you correct too
-fast at speed.
+fast at speed. The trailers with no jeep under them have one pivot instead, and
+the code builds whichever chain the spec describes rather than having two copies
+of it.
 
-The lowboy's four axles are individually simulated and individually weighed —
-the permit readout breaks them out one by one, because on a multi-axle trailer
-the group total is not the number anybody argues about. The second axle lifts
-(<kbd>L</kbd>), which moves several thousand pounds onto its neighbours; the
-rear two steer.
+Trailer axles are individually simulated and individually weighed — the permit
+readout breaks them out one by one, because on a multi-axle trailer the group
+total is not the number anybody argues about. On the lowboy the second axle lifts
+(<kbd>L</kbd>), which moves several thousand pounds onto its neighbours.
 
 ### The rear steer, and the steerman on the box
 
-Through a corner the back of a lowboy cuts inside the tractor's path. That gap
+Through a corner the back of a trailer cuts inside the tractor's path. That gap
 is off-tracking, and it is what decides whether a permit move fits round a bend
 at all. Steering the rear axle group *out* of the corner pushes the tail back
 out onto the tractor's line.
@@ -60,22 +116,23 @@ out onto the tractor's line.
 The geometry says exactly how far: the rear axles trace the same radius as the
 gooseneck when they are held at minus the articulation angle. So that is what
 the automatics hold — no gain, no tuning, just the angle that makes the two
-radii equal, clamped at the box's 25° of travel and faded out above manoeuvring
-speed, because a rear axle group steering itself at road speed does not shorten
+radii equal, clamped at the box's travel and faded out above manoeuvring speed,
+because a rear axle group steering itself at road speed does not shorten
 anything, it just wags the tail of a 212,000 lb load.
 
 `tools/offtrack.mjs` measures it on a steady 8 mph corner at ¾ lock — which,
-now that there are seven turns on the route at around a hundred metres, is a
-corner you take rather than a hypothetical:
+with eight sixty-metre intersection turns on the route, is a corner you take
+rather than a hypothetical:
 
 ```
 rear axles locked straight            9.40 m swept path   (articulation 65.2°)
-steerman on the automatics            6.23 m swept path   (articulation 50.6°)
+steerman on the automatics            6.22 m swept path   (articulation 50.5°)
 steerman winding it into the corner   8.61 m swept path   (articulation 58.1°)
 ```
 
-The steerman is on the box by default (<kbd>G</kbd> takes him off it). <kbd>Q</kbd>
-and <kbd>E</kbd> override him the instant you touch them, which is the same
+The steerman is on the box by default (<kbd>G</kbd> takes him off it) on every
+trailer that has one; the step deck has none, and says so. <kbd>Q</kbd> and
+<kbd>E</kbd> override him the instant you touch them, which is the same
 arrangement as a real crew: the automatics hold the line, the driver takes it off
 them when he wants the tail somewhere the geometry would not put it.
 
@@ -101,6 +158,14 @@ GROSS   212,746 lb
   reduction crawler set, 4.56 rear axle, turbo lag, three-stage compression brake,
   and clutch heat so that launching a superload in too tall a gear cooks the
   clutch instead of moving the load.
+- **Push trucks** — a dual-lane move has four engines on it, and they are not
+  four times one engine. The extras are geared to the same road speed and shift
+  together, so one engine model covers all of them, but what each contributes is
+  tractive effort through *its own* tires and is capped at what a loaded drive
+  tandem can actually hold. Multiplying the tractor's torque instead just spins
+  its drives: 328 tonnes needs 205 kN on a six percent grade and one tandem
+  cannot put that down. With the push trucks the combination holds 13.8 mph up
+  Prospect Hill; without them it stops on it.
 - **Driveline inertia** — reflected to the wheels through the square of the gear
   ratio. In a crawler gear this is ~1,000 kg·m² per wheel against the wheel's own
   32, and it is what lets the rig feed torque in smoothly on a grade instead of
@@ -111,7 +176,7 @@ GROSS   212,746 lb
 - **Suspension** — raycast struts with bump stops, anti-roll bars that transfer
   load across each axle, and chassis contact points so a 22-inch lowboy deck can
   actually ground out on a crest.
-- **Aerodynamics** — the load is 12 ft of unfaired steel, and crosswind acts at a
+- **Aerodynamics** — the load is a slab of unfaired steel, and crosswind acts at a
   centre of pressure above the centre of mass, so a gust rolls the rig rather than
   just shoving it.
 
@@ -119,80 +184,96 @@ Validated against real-world figures:
 
 | | |
 |---|---|
-| 0–30 mph | 28.8 s |
-| Braking from 37 mph | 156 ft, 0.30 g |
+| 0–30 mph | 28.9 s |
+| Braking from 30 mph | 105 ft, 0.30 g |
 | Rollover threshold | ~0.47 g lateral (SSF 0.47, CG at 2.10 m) |
-| Sustained 7% grade | 11.4 mph steady |
+| Sustained 6.3% grade | 11.6 mph steady |
 
-The rollover number is the one that matters. The load's centre of gravity sits
-2.1 m up, which puts the tipping point well below what the tires could hold — so
-corner speed is limited by the load going over, not by grip. That is why the
-advisory speeds are what they are, and why the rollover meter deserves more of
-your attention than the speedometer.
+The rollover number is the one that matters on the lowboy. The load's centre of
+gravity sits 2.1 m up, which puts the tipping point well below what the tires
+could hold — so corner speed is limited by the load going over, not by grip. That
+is why the advisory speeds are what they are, and why the rollover meter deserves
+more of your attention than the speedometer.
 
 ## The road
 
-The route is four different roads, and the cross-section is a first-class part
+The route is seven different roads, and the cross-section is a first-class part
 of the world rather than a pair of constants. Sections are declared at arc
 lengths and blended across a taper, so a lane opens the way a real one does — the
 pavement widens first, and the lane is only usable once the taper has finished.
 
 | | Lanes each way | Centre | Posted |
 |---|---|---|---|
-| Bennett yard road | 1 | — | 30 |
-| County Highway 14 | 1 | double yellow | 45 |
-| Ridge Road | 1, no shoulder | double yellow | 35 |
-| Valley Road | 1 | double yellow | 45 |
-| Cloverdale Pike | 2 | centre turn lane | 35 |
-| Substation approach | 1 | — | 25 |
+| Terminal Way | 1 | double yellow | 25 |
+| Dock Street | 2 | centre turn lane | 30 |
+| Harbor Boulevard | 2 | centre turn lane | 35 |
+| Market Street (downtown) | 2 | centre turn lane | 25 |
+| Prospect Hill Road | 1 | double yellow | 30 |
+| I-118 ramps | 1 | — | 25 / 35 |
+| Interstate 118 | 3 | concrete barrier | 55 |
+| Meridian Avenue | 2 | centre turn lane | 35 |
+| Foundry Road | 1 | double yellow | 30 |
 
-The pavement also widens through each of the turns onto a new road. That is not
-decoration: a 87 ft combination swinging through a hundred-metre radius puts its
-rear axles well inside the tractor's path, and the widening is the pavement the
-trailer needs to track across. It is the same taper mechanism as the extra lane
-in town, declared as a short section with a wider shoulder.
+The pavement also widens through each of the intersections the load turns at.
+That is not decoration: a combination between 64 and 249 feet long swinging
+through a sixty-metre radius puts its rear axles well inside the tractor's path,
+and the widening is the pavement the trailer needs to track across. It is the
+same taper mechanism as the extra lane on the arterial, declared as a short
+section with a much wider shoulder either side of the corner.
 
-Almost everything the other vehicles on the road do falls out of that. On the
-county highway a 3.66 m load in a 3.7 m lane leaves oncoming traffic nowhere to
-be except the shoulder, stopped, until the whole formation is past. On the
-arterial the same load takes the inside lane and everything coming the other way
-simply moves over one and keeps going — the move stops being something that
-shuts the road in both directions. The convoy test measures both: **82%** of
-oncoming traffic pulls over and stops on the two-lane road, against **1%**
-through town.
+**The merge is the same mechanism, used the other way round.** The acceleration
+lane onto I-118 is a 320 m taper: the pavement reaches full freeway width while
+there is still only one lane painted to drive in, and the second and third lanes
+open once it has finished. Coming off at exit 14 it runs backwards — three lanes
+to one over 300 m, which is why the lead car calls it before the paint starts
+running out.
+
+Almost everything the other vehicles on the road do falls out of that. On
+Prospect Hill and the industrial roads a 3.66 m load in a 3.7 m lane leaves
+oncoming traffic nowhere to be except the kerb, stopped, until the whole
+formation is past. On the arterials and the freeway the same load takes the
+inside lane and everything coming the other way simply moves over one and keeps
+going — the move stops being something that shuts the road in both directions.
+The convoy test measures both: **83%** of oncoming traffic pulls over and stops
+where there is one lane each way, against **0%** on the multi-lane roads.
 
 The paint is geometry, not a baked texture, because the road is not one width for
 its whole length: edge lines that follow the pavement wherever it goes, a double
-yellow that becomes a turn lane's markings when there is a turn lane, and lane
-dividers that exist exactly where there is a second lane to divide.
+yellow that becomes a turn lane's markings when there is a turn lane, lane
+dividers that exist exactly where there is a second lane to divide, and no yellow
+at all on the interstate — where what is down the middle is a barrier and a white
+edge line on each side of it.
 
 ## The convoy
 
 Four escorts, and the interesting behaviour is the **leapfrog**:
 
-- **Unit 12 / Unit 8** (police) — run ahead, park across the mouth of a side road
-  with the lights going, hold it until the whole 87 ft combination is clear, then
+- **Unit 12 / Unit 8** (police) — run ahead, take the light or park across the
+  mouth of a side road, hold it until the whole combination is clear, then
   release and run up the closed lane past you to take the next junction nobody is
-  covering. Done properly the load never stops, and it looks like every side road
-  on the route happens to be closed.
-  Through town they hold junctions a different way — see below.
+  covering. Done properly the load never stops, and it looks like every light in
+  the city happens to be green.
 - **Lead** (pilot car) — 140 m out front carrying a height pole set just above the
-  load, calling bridges, corners and grades over the radio before you can see them.
-- **Chase** (pilot car) — 95 m behind, keeping following traffic off your tail.
+  load, calling bridges, corners, ramps and grades over the radio before you can
+  see them.
+- **Chase** (pilot car) — behind the tail of the load, keeping following traffic
+  off it. Where the tail *is* comes from the trailer, so the chase car sits 70 m
+  behind a step deck's tailboard and 70 m behind the tip of a 72 m blade rather
+  than inside it.
 
 Ambient traffic runs an Intelligent Driver Model, and treats the load and every
 escort as solid: it follows them, queues behind them and cannot pass through them.
-Where there is one lane each way, oncoming vehicles take the shoulder and stop,
+Where there is one lane each way, oncoming vehicles take the kerb and stop,
 because the load is wider than the lane it is travelling in and there is
 physically nowhere for them to go — and they stay off until the whole formation
 is past, not just the load, because that lane is what the police units leapfrog
-up. Where there are two, they move over one instead and carry on.
+up. Where there are two or three, they move over instead and carry on.
 
 Traffic coming up behind joins the back of the escort formation and runs at
-convoy speed; nothing gets past the rear unit. On the arterial that takes two
-units, because there are two lanes for anybody behind to try it in — the chase
-car sits in the inside lane behind the load and Unit 8 takes the kerb lane, and a
-rolling block with a hole in it is not a rolling block.
+convoy speed; nothing gets past the rear unit. On a multi-lane road that takes
+two units, because there are two lanes for anybody behind to try it in — the
+chase car sits in the inside lane behind the load and Unit 8 takes the kerb lane,
+and a rolling block with a hole in it is not a rolling block.
 
 ## Signals
 
@@ -203,9 +284,9 @@ At a side road with a stop sign the officer has to physically close it: cross th
 carriageway, park across the mouth, and shut the highway down for the few seconds
 that takes. At a signal he does not. He **takes the light** — mainline green,
 every other approach red — from the kerb on his own side of the road, without
-ever crossing in front of anybody. Five of the fourteen junctions on the route
-are signalised, and the mission test asserts the load never arrives at one that
-is not green for it.
+ever crossing in front of anybody. Ten of the sixteen junctions on the route are
+signalised, which is what a city route looks like, and the mission test asserts
+the load never arrives at one that is not green for it.
 
 The controllers are real: a fixed cycle per intersection, each starting somewhere
 else in its own, with yellow and all-red clearance intervals that no two
@@ -221,79 +302,100 @@ chance, hold on the stop line when a unit has taken it, and will not pull out in
 front of the load whatever the signal says — the convoy test asserts nothing is
 ever in the intersection box as the load goes through it.
 
-## Cloverdale
+**Six of those intersections are junctions the load turns at**, and that is the
+difference between escorting a move across a city and down a highway. The unit
+does not just hold the cross street: it stops every approach, including the one
+behind the load, and the combination swings through the box at seven or eight
+miles an hour using both carriageways of the road it is turning into. Sixty
+metres on the centreline is what that manoeuvre traces out. A city intersection
+is built to a fifteen-metre kerb radius, which nothing in this yard can drive
+round — the sixty is the swept path of the manoeuvre that actually happens, and
+the pavement is widened through each junction to match.
 
-The last two miles run through a built-up area, which is a different kind of
-driving and is signed and built as one: kerbs and footways, houses set back off
-the road with driveways and mailboxes, street lighting on alternate poles, a
-signal every quarter mile, and a posted 35 that the advisory speed is now held
-under everywhere on the route. The ground beside the road is graded flat for two
-lot depths before it blends back into the terrain — a country road can run along
-the top of a fill with the ground falling away from the shoulder, but a street
-with houses on it cannot.
+## The city
 
-None of these vehicles are simulated with the rig's physics — they are an arc
-length along the route and a lane offset — so their pose is reconstructed for
-rendering: they yaw into a lane change before they get there, their front wheels
-stay turned for as long as they are turning, and they pitch with the grade.
-Without that, a shoulder pull-off is a box being slid sideways across the road.
+Six of the eight miles run between buildings, and that is signed and built as
+one: kerbs and footways starting at the pavement edge with no shoulder in
+between, towers downtown and three-storey blocks along the arterials, street
+lighting on alternate poles, a signal every quarter mile, and posted limits that
+drop to 25 through downtown. The ground for a block back from the kerb is graded
+flat — a freeway can run along the top of a fill with the ground falling away
+from the shoulder, but a street with buildings on it cannot — and it is tinted
+as paving rather than grass, because a rendered city with lawn between the
+footway and the building line is a business park.
 
-The mission test asserts all fourteen junctions are blocked before the load arrives,
-and the convoy test asserts nothing on the road ever occupies the same space as
-the load.
+Buildings come from a fixed catalogue of sizes rather than being scaled on the
+instance, so that the windows on a tower are the same size as the windows on a
+warehouse; one facade texture is drawn per size at that size. Downtown builds
+tall in the middle of the district and lower at its edges, which is what makes a
+skyline instead of a wall.
+
+None of the vehicles around you are simulated with the rig's physics — they are
+an arc length along the route and a lane offset — so their pose is reconstructed
+for rendering: they yaw into a lane change before they get there, their front
+wheels stay turned for as long as they are turning, and they pitch with the grade.
+Without that, a kerbside pull-off is a box being slid sideways across the road.
+
+The mission test asserts all sixteen junctions are blocked before the load
+arrives, and the convoy test asserts nothing on the road ever occupies the same
+space as the load.
 
 ## The route
 
-8.1 miles from the yard to Cloverdale Substation, written the way a survey
-describes a road rather than as a list of coordinates:
+8.4 miles from Anchor Point Terminal to the Northgate substation, written the way
+a survey describes a road rather than as a list of coordinates:
 
 ```js
-s.run(210);
-s.mark('onto CH14');
-s.left(86, 115);                 // onto County Highway 14
+s.run(300, 0.002);
+s.mark('onto Dock Street');
+s.left(88, 65, 0.002);           // first light: left onto Dock Street
 ```
 
 That is not a stylistic choice. The centreline used to be forty-eight control
-points read off a sketch, and stated that way nobody could see that the whole
-seven and a half miles contained **three** corners — everything between the
-switchback and the valley bend was a curve of over a kilometre's radius, which
-from the cab is a straight line. You cannot see a radius in a list of
+points read off a sketch, and stated that way nobody could see that seven and a
+half miles of it contained **three** corners. You cannot see a radius in a list of
 coordinates. Stated as turns, the corner is the unit of design, and
 `tools/survey.mjs` walks the finished centreline and reports every one of them:
 
 ```
 corner        at        through   min radius   advisory
-  right       298 m     86 deg       111 m       9 mph      onto County Highway 14
-  right      2318 m     76 deg       109 m       9 mph      at the County Route 9 signal
-  left       3723 m     64 deg       119 m      10 mph      onto Ridge Road
-  right      4985 m    158 deg        95 m       7 mph      the switchback
-  left       7050 m     84 deg       110 m       9 mph      onto Valley Road
-  right      9063 m     78 deg       109 m      10 mph      into Cloverdale
-  left      12498 m     88 deg       102 m       8 mph      in at the substation gate
+  left        353 m     88 deg        60 m       8 mph      onto Dock Street
+  right      1725 m     94 deg        69 m       8 mph      onto Harbor Boulevard
+  left       3328 m     87 deg        53 m       7 mph      into downtown
+  right      4590 m     83 deg        57 m       7 mph      onto Prospect Hill
+  right      7098 m     99 deg        51 m       7 mph      the I-118 loop ramp
+  right     10230 m     76 deg        63 m       9 mph      off at exit 14
+  right     11878 m     88 deg        63 m       8 mph      onto Foundry Road
+  right     12988 m     86 deg        51 m       7 mph      in at the Northgate gate
 ```
 
-Twenty-nine corners in all, seven of them turns off one road onto another. The
+(Those directions used to print backwards. `survey.mjs` derived them from the
+sign of the heading change and then labelled a positive rotation about +Y as a
+right turn, which it is not — see *which way is right* below. The route was
+always built from the survey's own `left` and `right`, so only the report was
+wrong, but the report is what the route is designed against.)
+
+Twenty-one corners in all, eight of them turns off one road onto another. The
 survey is also where everything else on the route is placed from: every junction,
-bridge, grade and change of cross-section is declared at a named mark rather than
-at a number, so moving a corner moves everything standing on it instead of
+bridge, grade, ramp and change of cross-section is declared at a named mark rather
+than at a number, so moving a corner moves everything standing on it instead of
 leaving a bridge in a field.
 
-- Fourteen junctions for the escorts to hold, five of them signalised crossroads,
-  and one of those is a junction the load **turns at** — the unit takes the light
-  and the load swings through the intersection at nine miles an hour
-- Three bridges with posted clearances; the tightest leaves **87 cm** over a
-  13'-7" load, and the lead car's pole is your proxy for it
-- A 103 m switchback through 158°, which is what the trailer's rear steer exists
-  for
-- A sustained **−9% descent**, where the compression brake is not optional
-  equipment — the mission test measures 274 °C in the drums without it against
-  187 °C with it
-- A mile and a half of suburban arterial at the end of it, where the road is five
-  lanes wide and the escort work is lights rather than roadblocks
+- Sixteen junctions for the escorts to hold, ten of them signalised crossroads,
+  and six of those are junctions the load **turns at**
+- Four structures with posted clearances; the tightest leaves **90 cm** over the
+  lowboy and **30 cm** over the dual-lane transformer, and the lead car's pole is
+  your proxy for it
+- A sustained **−9% descent** off Prospect Hill with a signalised junction at the
+  bottom of it, where the compression brake is not optional equipment — the
+  mission test measures 244 °C in the drums without it against 181 °C with it
+- A mile and a half of interstate, entered at a fifty-metre-radius loop ramp and
+  left at an exit, where the escort work is a rolling block in three lanes rather
+  than roadblocks
 
-The move takes about **28 minutes**, most of which is the seven turns: a
-212,000 lb load does not carry speed into a hundred-metre radius, and the lead
-car calls each one over the radio before you can see it.
+The move takes about **34 minutes**, most of which is the eight turns: a
+212,000 lb load does not carry speed into a sixty-metre radius, and the lead car
+calls each one over the radio before you can see it.
 
 ## What a frame costs
 
@@ -304,18 +406,18 @@ calls and 736,000 triangles — most of it not visible.
 Three things were wrong, and they compounded:
 
 **Nothing culled.** Three.js culls by bounding sphere, and the terrain, the
-2,600 trees, the guardrail, the power poles, the whole town and every painted
-line were each a single object spanning the entire route. Their bounding spheres
-were seven miles across, so they were never off screen and all of it was
-submitted every frame — and again for the shadow map. Everything static is built
-in 320 m chunks now, which is what lets the frustum test answer "no".
+trees, the guardrail, the power poles, the whole city and every painted line were
+each a single object spanning the entire route. Their bounding spheres were miles
+across, so they were never off screen and all of it was submitted every frame —
+and again for the shadow map. Everything static is built in 320 m chunks now,
+which is what lets the frustum test answer "no".
 
 **Everything was inside the far plane.** Six kilometres of draw distance on a
-twelve-kilometre route meant the town was being drawn from seven kilometres away,
-through fog that had already faded it to flat grey. Detail carries its own cull
-range now — trees at 1.7 km, street furniture and lane paint under a kilometre —
-which is what makes it affordable to see the country the route runs through at
-all.
+thirteen-kilometre route meant downtown was being drawn from seven kilometres
+away, through fog that had already faded it to flat grey. Detail carries its own
+cull range now — buildings and trees at 1.7 km, street furniture and lane paint
+under a kilometre — which is what makes it affordable to see the city the route
+runs through at all.
 
 **A body panel was three hundred triangles.** Every part of every vehicle was a
 `RoundedBoxGeometry` at two segments of corner detail, twenty-five times a plain
@@ -327,23 +429,25 @@ stay separate because they turn — except a car's rear pair, which turns about 
 axle line and so is exact to weld.
 
 ```
-                     before          after
-draw calls        826 – 1,179      271 – 775
-triangles      697k – 738k       71k – 229k
-draw distance         6 km            9 km
+                     before          after           city
+draw calls        826 – 1,179      271 – 775      506 – 868
+triangles      697k – 738k       71k – 229k     150k – 247k
+draw distance         6 km            9 km           9 km
 ```
 
-`tools/frame.mjs` produces that table from the running page and
+The city costs more than the country road it replaced, which is what a city is:
+there is simply more of it in front of you at any moment, and none of it is behind
+a hill. `tools/frame.mjs` produces that table from the running page and
 `tools/perf.mjs` measures the simulation headlessly — it is about 0.6 ms a
-frame, four percent of a 60 Hz budget, with the physics running at 200 Hz
-underneath it.
+frame, three percent of a 60 Hz budget, with the physics running at 200 Hz
+underneath it and up to fifty wheels on the road under the dual-lane platform.
 
 Two things sit on top. Resolution scales down toward half when the frame runs
 late and back up after two seconds comfortably inside budget, because a dropped
 frame is far more visible than a soft edge. And a road's worth of traffic is
-built at load time and parked in the pool, so a car appearing over the crest is a
-transform update rather than a dozen geometries, a merge and a shader compile
-inside one frame.
+built at load time and parked in the pool, so a car appearing at the intersection
+ahead is a transform update rather than a dozen geometries, a merge and a shader
+compile inside one frame.
 
 ### Why the traffic used to judder
 
@@ -400,16 +504,17 @@ the pedals, right stick is the rear steer. Steering is deliberately rate-limited
 — a truck's box is about five turns lock to lock, and a load this tall punishes
 fast corrections.
 
-Release the parking brake to start. Take the switchback at eight.
+Release the parking brake to start. Take the loop ramp at seven.
 
 ## Layout
 
 ```
 src/
-  physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig
+  physics/     RigidBody, Constraints, Tire, Powertrain, Brakes, Vehicle, Rig,
+               Trailers (the yard: what goes behind the tractor)
   world/       Survey (the centreline, as runs and turns), Route (junctions,
-               bridges, grades, projection), Corridor (lanes and cross-section),
-               Signal (controllers), Ground (terrain + grip)
+               bridges, ramps, grades, projection), Corridor (lanes and
+               cross-section), Signal (controllers), Ground (terrain + grip)
   ai/          Traffic (IDM, lanes, signals), Escort (blockades, leapfrog,
                preemption, radio), CrossTraffic, RoadPose
   render/      Scene (sky, lighting, probe), Models, WorldMesh
@@ -417,10 +522,11 @@ src/
   mission/     Scorecard (how the move actually went)
   ui/          HUD, Debrief, style
   core/        Input
-test/          physics, convoy, mission, road, scorecard, handedness
+test/          physics, trailers, convoy, mission, road, scorecard, handedness
 tools/         layout.mjs (load analysis), survey.mjs (every corner on the
-               route), perf.mjs and frame.mjs (what a frame costs), plus the
-               driving and browser harnesses
+               route), haul.mjs (every trailer over the whole route),
+               perf.mjs and frame.mjs (what a frame costs), plus the driving
+               and browser harnesses
 ```
 
 ### Which way is right
@@ -444,4 +550,5 @@ convoy simulator, and Playwright scripts that drive the real page. They are the
 reason the numbers above are measurements rather than intentions.
 
 In the browser console, `game.jumpTo(metres, mph)` teleports the convoy anywhere
-on the route — handy for going straight to the switchback or the grade.
+on the route — handy for going straight to the loop ramp or the descent — and
+`game.setTrailer(id)` swaps what is behind the tractor.

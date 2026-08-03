@@ -4,6 +4,7 @@ import { BallJoint, RollCoupling, YawLimit } from './Constraints.js';
 import { Powertrain } from './Powertrain.js';
 import { AirSystem, BrakeGroup } from './Brakes.js';
 import { TRUCK_TIRE, STEER_TIRE } from './Tire.js';
+import { getTrailer, resolveTrailer, DEFAULT_TRAILER } from './Trailers.js';
 
 const GRAVITY = new Vector3(0, -9.81, 0);
 const LOCAL_FWD = new Vector3(0, 0, 1);
@@ -14,64 +15,111 @@ const _tmp = new Vector3();
 
 const N_TO_LB = 0.2248089431;
 
+/**
+ * What one extra prime mover can put on the road, newtons.
+ *
+ * A tractor's drive tandem carries about seventeen tonnes, and a tire can hold
+ * roughly its own vertical load in tractive effort before it gives up -- so a
+ * push truck is good for something like 110 kN whatever its engine is capable
+ * of. This is the cap that stops four engines becoming four times the traction.
+ */
+const PUSH_TRACTION = 110000;
+
 // Every pivot on the combination sits at this height above the road, which is
 // where a real fifth wheel plate lives.
 const COUPLING_HEIGHT = 1.329;
 
 /**
- * The complete heavy haul combination: 6x4 tractor, two-axle jeep dolly, and a
- * multi-axle lowboy carrying the load.
+ * The complete heavy haul combination: a 6x4 tractor, optionally a jeep dolly,
+ * and whichever trailer the yard has put under the load.
  *
- * Three separate rigid bodies coupled at two pivots is the smallest model that
- * reproduces the behaviour that defines this kind of driving -- the trailer
- * tracking well inside the tractor's path through a corner, the load pushing the
- * drives around under braking, and the two-pivot sway that builds if you correct
- * too fast at speed.
+ * Separate rigid bodies coupled at pivots is the smallest model that reproduces
+ * the behaviour that defines this kind of driving -- the trailer tracking well
+ * inside the tractor's path through a corner, the load pushing the drives around
+ * under braking, and the slow sway that builds if you correct too fast at speed.
+ *
+ * What goes behind the tractor is declared in `Trailers.js` rather than written
+ * in here, because it is not one trailer: a three-axle step deck, a lowboy on a
+ * jeep, a twenty-axle dual-lane platform and a seventy-metre blade cradle are
+ * all the same three sentences of geometry with different numbers in them.
  */
 export class Rig {
   constructor(options = {}) {
-    const cargo = options.cargo ?? {
-      name: 'Substation transformer',
-      mass: 68000,
-      size: new Vector3(3.6, 3.05, 8.4),
-      centerHeight: 2.10,
-    };
-    this.cargo = cargo;
+    const base = typeof options.trailer === 'object' && options.trailer
+      ? options.trailer
+      : getTrailer(options.trailer ?? DEFAULT_TRAILER);
+    // `cargo` still overrides whatever the spec carries, so a caller can put a
+    // different load on a known trailer without declaring a new one.
+    const spec = resolveTrailer(base, options.cargo ?? null);
+    this.spec = spec;
+    this.cargo = spec.cargo;
+    this.loadHeight = spec.loadHeight;
+    this.combinationLength = spec.combinationLength;
 
     this.tractor = this.buildTractor();
-    this.jeep = this.buildJeep();
-    this.trailer = this.buildTrailer(cargo);
+    this.jeep = spec.jeep ? this.buildJeep(spec.jeep) : null;
+    this.trailer = this.buildTrailer(spec);
 
-    this.units = [this.tractor, this.jeep, this.trailer];
+    this.units = this.jeep
+      ? [this.tractor, this.jeep, this.trailer]
+      : [this.tractor, this.trailer];
 
     // --- Couplings ---------------------------------------------------------
-    // Anchor heights put every pivot at a 1.27 m coupling height, which is where
+    // Anchor heights put every pivot at the same coupling height, which is where
     // a real fifth wheel sits. See tools/layout.mjs for the static load analysis
     // these positions come from.
     //
-    // Tractor fifth wheel -> jeep kingpin
-    this.hitchA = new BallJoint(
-      this.tractor.body, new Vector3(0, 0.146, -2.10),
-      this.jeep.body, new Vector3(0, 0.337, 2.20)
-    );
-    this.rollA = new RollCoupling(this.tractor.body, this.jeep.body, { stiffness: 0.85 });
-    this.yawA = new YawLimit(this.tractor.body, this.jeep.body, { limit: 1.45 });
+    // The chain is built rather than written out, because a combination is two
+    // pivots with a jeep in it and one without, and the only thing that changes
+    // between them is what the tractor's fifth wheel is picking up.
+    this.pivots = [];
+    const link = (a, aAnchor, b, bAnchor, { roll, yaw }) => {
+      const pivot = {
+        ball: new BallJoint(a.body, aAnchor, b.body, bAnchor),
+        roll: new RollCoupling(a.body, b.body, { stiffness: roll }),
+        yaw: new YawLimit(a.body, b.body, { limit: yaw }),
+      };
+      this.pivots.push(pivot);
+      return pivot;
+    };
 
-    // Jeep fifth wheel -> lowboy gooseneck. The jeep's rear coupling sits just
-    // ahead of its own axles so that a useful share of the deck load carries
-    // forward onto the tractor's drives instead of levering the nose light.
-    this.hitchB = new BallJoint(
-      this.jeep.body, new Vector3(0, 0.337, -0.30),
-      this.trailer.body, new Vector3(0, COUPLING_HEIGHT - this.trailer.comHeight, 6.30)
-    );
-    this.rollB = new RollCoupling(this.jeep.body, this.trailer.body, { stiffness: 0.88 });
-    this.yawB = new YawLimit(this.jeep.body, this.trailer.body, { limit: 1.30 });
+    const goosenecky = new Vector3(0, COUPLING_HEIGHT - this.trailer.comHeight, spec.couplingZ);
+    if (this.jeep) {
+      const j = spec.jeep;
+      link(this.tractor, new Vector3(0, 0.146, -2.10),
+        this.jeep, new Vector3(0, 0.337, j.kingpinZ), { roll: 0.85, yaw: 1.45 });
+      // The jeep's rear coupling sits just ahead of its own axles so that a
+      // useful share of the deck load carries forward onto the tractor's drives
+      // instead of levering the nose light.
+      link(this.jeep, new Vector3(0, 0.337, j.fifthWheelZ),
+        this.trailer, goosenecky, { roll: 0.88, yaw: 1.30 });
+    } else {
+      link(this.tractor, new Vector3(0, 0.146, -2.10),
+        this.trailer, goosenecky, { roll: 0.86, yaw: 1.40 });
+    }
 
-    this.constraints = [this.hitchA, this.rollA, this.yawA, this.hitchB, this.rollB, this.yawB];
-    this.solverIterations = 12;
+    // Named handles on the ends of the chain: `A` is the pivot behind the cab,
+    // which is the one that jackknifes, and `B` is the trailer's own, which is
+    // the one the steerman works against. On a combination with no jeep in it
+    // they are the same pivot.
+    const first = this.pivots[0];
+    const last = this.pivots[this.pivots.length - 1];
+    this.hitchA = first.ball;
+    this.rollA = first.roll;
+    this.yawA = first.yaw;
+    this.hitchB = last.ball;
+    this.rollB = last.roll;
+    this.yawB = last.yaw;
+
+    this.constraints = this.pivots.flatMap((p) => [p.ball, p.roll, p.yaw]);
+    this.solverIterations = spec.solverIterations;
 
     // --- Systems -----------------------------------------------------------
-    this.powertrain = new Powertrain();
+    // A dual-lane move has more than one engine on it. The extra prime movers
+    // are not simulated as separate bodies -- they are pushing and pulling on
+    // the same combination through the same driveline speed -- so they show up
+    // as the tractive effort they contribute and nothing else.
+    this.powertrain = new Powertrain({ powerUnits: spec.powerUnits });
     this.air = new AirSystem();
 
     // --- Controls ----------------------------------------------------------
@@ -83,15 +131,18 @@ export class Rig {
     this.brake = 0;
     this.trailerSteerInput = 0; // steerman control for the rear axle group
     this.trailerSteerAngle = 0;
-    this.maxTrailerSteer = 0.44;
+    this.maxTrailerSteer = spec.maxRearSteer;
     // With this on, the rear axle group steers itself against the articulation
     // instead of waiting for the steerman's box. Q and E still override it.
-    this.autoTrailerSteer = true;
+    this.autoTrailerSteer = spec.maxRearSteer > 0;
     this.diffLock = false;
 
     this.wheelbase = 5.10;
     this.steerTrack = 2.04;
-    this.trailerHalfTrack = 0.98;
+    // Half the trailer's track at its outermost tire line, which is what the
+    // rollover threshold is measured against. A dual-lane platform is nearly
+    // three metres out to each side and is correspondingly hard to tip over.
+    this.trailerHalfTrack = spec.halfTrack;
 
     // Ambient wind, world space. Escort crews call wind constantly on a tall
     // load, and a permit move is normally shut down above about 30 mph gusts.
@@ -165,13 +216,13 @@ export class Rig {
     return unit;
   }
 
-  buildJeep() {
+  buildJeep(spec) {
     const mountY = -0.20;
     const wheels = [];
-    for (const z of [-1.00, -2.35]) {
+    for (const z of spec.axleZ) {
       for (const side of [-1, 1]) {
         wheels.push(new Wheel({
-          position: new Vector3(side * 0.94, mountY, z),
+          position: new Vector3(side * spec.track, mountY, z),
           dual: true,
           tire: TRUCK_TIRE,
           restLength: 0.28,
@@ -185,94 +236,106 @@ export class Rig {
 
     const unit = new VehicleUnit({
       name: 'jeep',
-      mass: 5000,
-      size: new Vector3(2.5, 1.4, 5.2),
+      mass: spec.mass,
+      size: spec.size,
       wheels,
-      position: new Vector3(0, 0.992, -4.30),
+      position: new Vector3(0, 0.992, this.spec.jeepOffset),
     });
-    unit.antiRollStiffness = 320000;
+    unit.antiRollStiffness = spec.antiRoll;
     unit.dragArea = 0.5;
-    unit.sideArea = 3.4;
+    unit.sideArea = spec.size.z * 0.65;
     unit.pressureCenterHeight = 0.4;
+    const back = spec.axleZ[spec.axleZ.length - 1] - 0.25;
     unit.chassisPoints = [
       new Vector3(-0.6, -0.55, 1.6), new Vector3(0.6, -0.55, 1.6),
-      new Vector3(-0.6, -0.55, -2.6), new Vector3(0.6, -0.55, -2.6),
+      new Vector3(-0.6, -0.55, back), new Vector3(0.6, -0.55, back),
     ];
     return unit;
   }
 
   /**
-   * The lowboy. Four rear axles carry the deck load; the rearmost two steer,
-   * operated either by the driver or by a steerman walking alongside.
+   * Whatever is under the load, built from its spec.
+   *
+   * The interesting part is that none of the geometry below is written down
+   * twice. The suspension mount height is derived from the load's own centre of
+   * gravity, the tire lines from the declared track, and the underside contact
+   * points from the deck -- so a trailer declared with a metre of extra deck
+   * height cannot silently end up with its wheels buried in the road, and one
+   * with the load stacked two metres higher gets the rollover threshold that
+   * implies rather than the lowboy's.
    */
-  buildTrailer(cargo) {
-    const trailerTare = 14000;
-    const mass = trailerTare + cargo.mass;
-    const deckHeight = 0.55;
+  buildTrailer(spec) {
+    const cargo = spec.cargo;
+    const mass = spec.tare + cargo.mass;
 
-    // The load dominates the combined centre of gravity, and it sits high. This
-    // is the single biggest handling factor on the rig: it sets the rollover
-    // threshold, and it is why these moves crawl through corners a bobtail
-    // tractor would take at forty.
-    const comHeight = (cargo.mass * cargo.centerHeight + trailerTare * 0.90) / mass;
+    // The load usually dominates the combined centre of gravity, and it usually
+    // sits high. This is the single biggest handling factor on the rig: it sets
+    // the rollover threshold, and it is why these moves crawl through corners a
+    // bobtail tractor would take at forty.
+    const comHeight = (cargo.mass * cargo.centerHeight + spec.tare * (spec.deckHeight + 0.35)) / mass;
 
-    // Suspension geometry is derived from that centre of gravity rather than
-    // hardcoded, so changing the load cannot silently leave the wheels buried
-    // in the road or hanging above it.
-    const radius = 0.46;
-    const restLength = 0.26;
+    const a = spec.axle;
     const staticCompression = 0.047;
-    const mountY = -(comHeight - (restLength - staticCompression) - radius);
+    const mountY = -(comHeight - (a.restLength - staticCompression) - a.radius);
 
     const wheels = [];
-    const axleZ = [-4.10, -5.45, -6.80, -8.15];
-    axleZ.forEach((z, i) => {
-      for (const side of [-1, 1]) {
-        wheels.push(new Wheel({
-          position: new Vector3(side * 0.98, mountY, z),
-          dual: true,
-          radius,
-          tire: TRUCK_TIRE,
-          restLength,
-          stiffness: 700000,
-          damping: 40000,
-          maxTravel: 0.16,
-          // The two rearmost axles steer to shorten the effective off-track
-          // through tight corners.
-          tandemSteer: i >= 2,
-          brake: new BrakeGroup({ maxTorque: 8600, thermalMass: 26000, lag: 0.32 }),
-          liftable: i === 1,
-        }));
+    for (const axle of spec.axles) {
+      for (const track of spec.tracks) {
+        for (const side of [-1, 1]) {
+          wheels.push(new Wheel({
+            position: new Vector3(side * track, mountY, axle.z),
+            dual: true,
+            radius: a.radius,
+            tire: TRUCK_TIRE,
+            restLength: a.restLength,
+            stiffness: a.stiffness,
+            damping: a.damping,
+            maxTravel: a.maxTravel,
+            // The rear group steers to shorten the effective off-track through
+            // tight corners. On the long trailers it is not an optimisation --
+            // nothing gets round a corner without it.
+            tandemSteer: !!axle.steer,
+            brake: new BrakeGroup({
+              maxTorque: a.brakeTorque, thermalMass: a.brakeThermalMass, lag: a.brakeLag,
+            }),
+            liftable: !!axle.lift,
+          }));
+        }
       }
-    });
+    }
 
     const unit = new VehicleUnit({
       name: 'trailer',
       mass,
-      size: new Vector3(3.6, cargo.size.y, 16.0),
+      size: new Vector3(spec.bodyWidth, Math.max(cargo.size.y, 1.2), spec.bodyLength),
       wheels,
-      position: new Vector3(0, comHeight, -10.90),
+      position: new Vector3(0, comHeight, spec.trailerOffset),
     });
     unit.comHeight = comHeight;
-    unit.deckHeight = deckHeight;
-    unit.antiRollStiffness = 420000;
+    unit.deckHeight = spec.deckHeight;
+    unit.antiRollStiffness = spec.antiRoll;
     unit.cargo = cargo;
 
-    // The load itself is the aerodynamic problem: 3.6 m wide and 3 m tall of
-    // flat, unfaired steel. Cd for a bluff box like this is close to 1.0.
+    // The load itself is the aerodynamic problem: several metres of flat,
+    // unfaired steel. Cd for a bluff box like this is close to 1.0.
     const frontal = cargo.size.x * cargo.size.y;
     unit.dragArea = frontal * 0.98;
     unit.sideArea = cargo.size.z * cargo.size.y * 0.85;
-    unit.pressureCenterHeight = cargo.centerHeight - (comHeight - 0);
+    unit.pressureCenterHeight = cargo.centerHeight - comHeight;
 
-    // Underside of the well deck. At 0.55 m off the road this is the lowest
-    // point on the whole combination and the first thing to touch on a crest.
-    const deckLocalY = deckHeight - comHeight;
-    unit.chassisPoints = [
-      new Vector3(-1.3, deckLocalY, 4.6), new Vector3(1.3, deckLocalY, 4.6),
-      new Vector3(-1.3, deckLocalY, 0.0), new Vector3(1.3, deckLocalY, 0.0),
-      new Vector3(-1.3, deckLocalY, -3.2), new Vector3(1.3, deckLocalY, -3.2),
-    ];
+    // Underside of the deck. On a lowboy this is half a metre off the road and
+    // is the lowest point on the whole combination -- the first thing to touch
+    // on a crest.
+    const deckLocalY = spec.deckHeight - comHeight;
+    const halfDeck = spec.deckWidth * 0.5 - 0.2;
+    const stations = 4;
+    for (let i = 0; i <= stations; i++) {
+      const z = spec.deckFrom + ((spec.deckTo - spec.deckFrom) * i) / stations;
+      unit.chassisPoints.push(
+        new Vector3(-halfDeck, deckLocalY, z),
+        new Vector3(halfDeck, deckLocalY, z)
+      );
+    }
     return unit;
   }
 
@@ -358,6 +421,37 @@ export class Rig {
     return Math.max(-this.maxTrailerSteer, Math.min(this.maxTrailerSteer, target));
   }
 
+  /**
+   * The other prime movers on the combination.
+   *
+   * A dual-lane move is not one truck. There is a second tractor on the drawbar
+   * and push trucks on the back, and they are the reason 328 tonnes can be
+   * started at all: one 600 hp tractor makes plenty of torque for it in a
+   * crawler gear, but a single drive tandem cannot put 200 kN on the road
+   * without simply spinning, whatever the engine is doing.
+   *
+   * So the extras are not modelled as more torque through this tractor's tires.
+   * They push through their own, and what each of them can contribute is capped
+   * by what a loaded drive tandem can actually hold -- which is why the whole
+   * combination still crawls up a six percent grade rather than climbing it like
+   * an empty truck.
+   */
+  applyPushUnits(wheelTorque, wheelRadius) {
+    const extra = this.spec.powerUnits - 1;
+    if (extra <= 0) return;
+
+    const perUnit = wheelTorque / wheelRadius;
+    const limited = Math.max(-PUSH_TRACTION, Math.min(PUSH_TRACTION, perUnit));
+    const body = this.trailer.body;
+    body.localToWorldDir(LOCAL_FWD, _tmp).normalize().multiplyScalar(limited * extra);
+    // At the centre of mass: a push truck on the back and a tractor on the
+    // drawbar are pushing and pulling on the same line, and splitting them into
+    // a couple that yaws the platform is a detail this model has no business
+    // inventing.
+    body.applyForce(_tmp, body.position);
+    this.pushForce = limited * extra;
+  }
+
   /** Average angular velocity of the drive wheels, rad/s. */
   driveWheelOmega() {
     const driven = this.tractor.wheels.filter((w) => w.driven);
@@ -401,6 +495,8 @@ export class Rig {
         Math.max(1, driven.length);
     for (const w of driven) w.drivelineInertia = reflected;
 
+    this.applyPushUnits(wheelTorque, wheelRadius);
+
     // --- Aerodynamics -------------------------------------------------------
     for (const unit of this.units) unit.applyAerodynamics(this.wind);
 
@@ -408,19 +504,17 @@ export class Rig {
     // A locked inter-axle differential sends torque to the wheels that can use
     // it instead of splitting it evenly into whichever one is already spinning.
     this.tractor.update(dt, ground, wheelTorque, brakeDemand, this.air.psi, this.diffLock);
-    this.jeep.update(dt, ground, 0, brakeDemand, this.air.psi);
-    this.trailer.update(dt, ground, 0, brakeDemand, this.air.psi);
+    for (const unit of this.units) {
+      if (unit !== this.tractor) unit.update(dt, ground, 0, brakeDemand, this.air.psi);
+    }
 
     // --- Integrate and solve -----------------------------------------------
     for (const unit of this.units) unit.body.integrateVelocity(dt, GRAVITY);
 
     for (let i = 0; i < this.solverIterations; i++) {
-      this.hitchA.solve(dt);
-      this.hitchB.solve(dt);
-      this.rollA.solve();
-      this.rollB.solve();
-      this.yawA.solve();
-      this.yawB.solve();
+      for (const p of this.pivots) p.ball.solve(dt);
+      for (const p of this.pivots) p.roll.solve();
+      for (const p of this.pivots) p.yaw.solve();
     }
 
     for (const unit of this.units) unit.body.integratePosition(dt);
@@ -496,19 +590,22 @@ export class Rig {
     };
     push('Steer', this.tractor.wheels.filter((w) => w.position.z > 0));
     push('Drives', this.tractor.wheels.filter((w) => w.position.z < 0));
-    push('Jeep', this.jeep.wheels);
+    if (this.jeep) push('Jeep', this.jeep.wheels);
 
-    // Group the lowboy's wheels by axle, front to back.
+    // Group the trailer's wheels by axle, front to back. A dual-lane platform
+    // has four tire lines on each of them, and they are still one axle as far as
+    // a scale is concerned.
     const byAxle = new Map();
     for (const w of this.trailer.wheels) {
       const key = w.position.z.toFixed(2);
       if (!byAxle.has(key)) byAxle.set(key, []);
       byAxle.get(key).push(w);
     }
+    const label = this.spec.axleLabel ?? 'Axle';
     [...byAxle.values()]
       .sort((a, b) => b[0].position.z - a[0].position.z)
       .forEach((wheels, i) => {
-        push(`Lowboy ${i + 1}`, wheels, {
+        push(`${label} ${i + 1}`, wheels, {
           lifted: wheels.every((w) => w.lifted),
           steered: wheels.some((w) => w.tandemSteer),
         });
@@ -549,8 +646,12 @@ export class Rig {
    * axle load.
    */
   placeAt(position, heading, ground = null) {
-    const offsets = [0, -4.30, -10.90];
-    const rideHeights = [1.182, 0.992, this.trailer.comHeight];
+    const offsets = this.jeep
+      ? [0, this.spec.jeepOffset, this.spec.trailerOffset]
+      : [0, this.spec.trailerOffset];
+    const rideHeights = this.jeep
+      ? [1.182, 0.992, this.trailer.comHeight]
+      : [1.182, this.trailer.comHeight];
     const dir = new Vector3(Math.sin(heading), 0, Math.cos(heading));
 
     this.units.forEach((unit, i) => {

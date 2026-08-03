@@ -16,7 +16,7 @@ import { chromium } from 'playwright';
  * down as numbers, so moving a corner does not silently move the measurement
  * somewhere else on the road.
  */
-const WHERE = ['onto CH14', 'CH14 settled', 'CR9 turn', 'switchback', 'grade bottom', 'town line', 'Fairview Drive'];
+const WHERE = ['onto Dock Street', 'Cannery Street', 'onto Market Street', 'Third Street', 'grade bottom', 'merge', 'Meridian & Canal'];
 
 const browser = await chromium.launch({
   ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),

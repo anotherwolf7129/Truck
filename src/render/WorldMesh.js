@@ -5,6 +5,8 @@ import {
   Object3D, Color, SRGBColorSpace,
 } from 'three';
 import { Weld } from './Models.js';
+import { Corridor } from '../world/Corridor.js';
+import { BUILT_UP_SHELF } from '../world/Ground.js';
 
 const _p = new Vector3();
 const _q = new Vector3();
@@ -56,6 +58,54 @@ function makeAsphaltTexture() {
 }
 
 /**
+ * A building's front, drawn once for each size in the catalogue.
+ *
+ * Windows are what make a box a building, and at the distance these are seen
+ * from that is all they need to be: a grid at storey spacing, unevenly lit,
+ * against the wall colour. Drawing it at the building's real size rather than
+ * scaling one texture is the whole point -- a tower and a warehouse have windows
+ * the same size as each other in life, and stretching one image over both is
+ * exactly what makes rendered cities look like toys.
+ */
+function makeFacadeTexture(widthM, heightM, style) {
+  const storey = style === 'shed' ? 4.5 : 3.4;
+  const bay = style === 'shed' ? 6.0 : 3.0;
+  const rows = Math.max(1, Math.round(heightM / storey));
+  const cols = Math.max(2, Math.round(widthM / bay));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.min(512, cols * 16);
+  canvas.height = Math.min(512, rows * 16);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cw = canvas.width / cols;
+  const chh = canvas.height / rows;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      // The ground floor is a shopfront or a loading door rather than a window.
+      const ground = r === rows - 1;
+      const lit = Math.random();
+      if (style === 'shed' && !ground) continue;
+      ctx.fillStyle = ground
+        ? (style === 'shed' ? '#2f3336' : '#3b4148')
+        : lit > 0.82 ? '#c8c2a2' : lit > 0.4 ? '#39434e' : '#2b333c';
+      const inset = ground ? 0.10 : 0.18;
+      ctx.fillRect(
+        (c + inset) * cw, (r + (ground ? 0.15 : 0.22)) * chh,
+        cw * (1 - inset * 2), chh * (ground ? 0.7 : 0.56)
+      );
+    }
+  }
+
+  const tex = new CanvasTexture(canvas);
+  tex.colorSpace = SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/**
  * How much route one chunk of scenery covers, in metres.
  *
  * Everything static is built in chunks this long so that the renderer can throw
@@ -84,6 +134,12 @@ const CHUNK = 320;
  * one, because it is what is left to look at.
  */
 const TREE_RANGE = 1700;
+
+/**
+ * How far back from the kerb the ground is city rather than country, by road
+ * kind. Matches the graded shelf in `Ground`, since it is the same shelf.
+ */
+const BUILT_SHELF = { downtown: 120, urban: 64, industrial: 70 };
 const DETAIL_RANGE = 950;
 
 /**
@@ -253,12 +309,26 @@ export class WorldMesh {
     this.buildDistantTerrain();
     this.buildTerrain();
     this.buildScenery();
-    this.buildTown();
+    this.buildCity();
+    this.buildMedianBarrier();
     this.buildBridges();
     this.buildJunctions();
     this.buildPaint();
     this.buildSignals();
     this.buildSigns();
+  }
+
+  /** Stretches of route whose road kind satisfies a predicate. */
+  spansWhere(predicate, step = 20) {
+    const spans = [];
+    let start = null;
+    for (let s = 0; s <= this.route.length; s += step) {
+      const on = predicate(this.route.kindAt(s), s);
+      if (on && start === null) start = s;
+      if (!on && start !== null) { spans.push([start, s]); start = null; }
+    }
+    if (start !== null) spans.push([start, this.route.length]);
+    return spans;
   }
 
   /** Height of the paved surface at a point across the road, camber included. */
@@ -344,20 +414,31 @@ export class WorldMesh {
       width: 0.14,
     });
 
-    // Centreline. With no turn lane this is the familiar double yellow of a
-    // no-passing rural highway; with one it becomes the turn lane's markings,
-    // solid on the outside and dashed on the inside.
-    const plain = (s) => route.medianAt(s) < 1.0;
+    // The centre of the road, which is three different things on this route. A
+    // street with no turn lane gets the familiar double yellow; one with a turn
+    // lane gets that lane's markings, solid on the outside and dashed on the
+    // inside; and a freeway gets none of it, because what is down the middle
+    // there is a concrete barrier and a white edge line on each side of it.
+    const centre = (s) => route.corridor.centre(s);
+    const plain = (s) => centre(s) === 'double-yellow';
+    const divided = (s) => centre(s) === 'barrier';
     for (const side of [-1, 1]) {
       this.addStripe(yellow, {
         offsetAt: (s) => (plain(s) ? side * 0.17 : side * route.medianAt(s) * 0.5),
         width: 0.13,
+        existsAt: (s) => !divided(s),
       });
       this.addStripe(yellow, {
         offsetAt: (s) => side * (route.medianAt(s) * 0.5 - 0.42),
         width: 0.13,
-        existsAt: (s) => !plain(s),
+        existsAt: (s) => !plain(s) && !divided(s),
         dash: [3, 3],
+      });
+      // The freeway's inside edge line, against the barrier.
+      this.addStripe(white, {
+        offsetAt: (s) => side * (route.medianAt(s) * 0.5 + 0.35),
+        width: 0.13,
+        existsAt: divided,
       });
     }
 
@@ -605,6 +686,7 @@ export class WorldMesh {
     const grass = new Color(0x6f8a45);
     const dry = new Color(0x9d9256);
     const rock = new Color(0x7a7369);
+    const paving = new Color(0x6e6f6c);
     const tmp = new Color();
 
     const mat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.97, metalness: 0 });
@@ -617,7 +699,7 @@ export class WorldMesh {
     for (let from = 0; from < count; from += perChunk) {
       const to = Math.min(count, from + perChunk);
       const mesh = this.terrainChunk(from, to, {
-        along, lanes, maxLateral, grass, dry, rock, tmp, mat,
+        along, lanes, maxLateral, grass, dry, rock, paving, tmp, mat,
       });
       this.terrain.push(mesh);
       this.group.add(mesh);
@@ -625,7 +707,7 @@ export class WorldMesh {
   }
 
   /** One chunk of the terrain skirt, from station `from` to station `to`. */
-  terrainChunk(from, to, { along, lanes, maxLateral, grass, dry, rock, tmp, mat }) {
+  terrainChunk(from, to, { along, lanes, maxLateral, grass, dry, rock, paving, tmp, mat }) {
     const route = this.route;
     const positions = [];
     const normals = [];
@@ -663,14 +745,23 @@ export class WorldMesh {
         positions.push(_p.x, h, _p.z);
         normals.push(0, 1, 0);
 
-        // Tint by slope, elevation and field, so the ridge reads differently
-        // from the valley floor and the valley floor is not one flat green.
+        // Tint by slope, elevation and ground cover, so the hill reads
+        // differently from the flats and the flats are not one shade of green.
         const slope = Math.min(1, Math.abs(this.ground.heightAt(_p.x + 6, _p.z) - h) / 6);
         const patch = this.ground.patchNoise(_p.x, _p.z);
         tmp.copy(grass).lerp(dry, Math.min(1, Math.max(0, (h - 40) / 120)));
         tmp.lerp(dry, Math.max(0, (patch - 0.45) * 1.5));
         tmp.lerp(rock, slope * 0.75);
         tmp.multiplyScalar(0.86 + patch * 0.28);
+        // Inside the city the ground between the buildings is not ground: it is
+        // yards, car parks, side streets and the back of the block. Grass there
+        // is what makes a rendered city read as a model village with roads laid
+        // over a lawn, so the built-up shelf is faded toward paving instead.
+        const built = BUILT_UP_SHELF[route.kindAt(s)] ?? 0;
+        if (built && offset < built) {
+          const fade = 1 - Math.pow(offset / built, 2);
+          tmp.lerp(paving, 0.8 * fade * (0.75 + patch * 0.4));
+        }
         colors.push(tmp.r, tmp.g, tmp.b);
       }
       if (i < count) {
@@ -730,20 +821,23 @@ export class WorldMesh {
     while (placed < treeCount && guard++ < treeCount * 8) {
       const s = Math.random() * route.length;
       const side = Math.random() < 0.5 ? -1 : 1;
-      const suburban = route.kindAt(s) === 'suburban';
-      // Town gets street trees rather than woods: close in, and only every so
-      // often, so the houses behind them can still be seen.
-      if (suburban && Math.random() > 0.25) continue;
-      const lateral = suburban
-        ? side * (route.halfWidthAt(s) + 3.4 + Math.random() * 1.6)
-        : side * (route.halfWidthAt(s) + 8 + Math.pow(Math.random(), 0.7) * 150);
+      const kind = route.kindAt(s);
+      // A city gets street trees rather than woods: in the footway, and only
+      // every so often, so the buildings behind them can still be seen. Nothing
+      // is planted downtown, and nothing but scrub grows along a freeway.
+      if (kind === 'downtown') continue;
+      const street = kind === 'urban';
+      if (street && Math.random() > 0.3) continue;
+      const lateral = street
+        ? side * (route.halfWidthAt(s) + 1.8 + Math.random() * 0.8)
+        : side * (route.halfWidthAt(s) + 12 + Math.pow(Math.random(), 0.7) * 150);
       route.positionAt(s, lateral, _p);
       const h = this.ground.heightAt(_p.x, _p.z);
 
       // Keep the corridor and the junction mouths clear.
       if (this.nearJunction(s, side, 40) && Math.abs(lateral) < 60) continue;
 
-      const scale = suburban ? 0.55 + Math.random() * 0.35 : 0.7 + Math.random() * 0.9;
+      const scale = street ? 0.5 + Math.random() * 0.3 : 0.7 + Math.random() * 0.9;
       _dummy.position.set(_p.x, h + 1.7 * scale, _p.z);
       _dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
       _dummy.scale.setScalar(scale);
@@ -791,6 +885,8 @@ export class WorldMesh {
     posts.build(this.group, this.ranged, DETAIL_RANGE);
 
     // --- Power lines, which the route is delivering a transformer to -------
+    // Not downtown, where they are underground, and not along the interstate,
+    // which does not have a pole line beside it.
     const poleMat = new MeshStandardMaterial({ color: 0x6b5844, roughness: 0.95 });
     const poleGeo = new CylinderGeometry(0.16, 0.22, 11, 6);
     const armGeo = new BoxGeometry(2.6, 0.14, 0.14);
@@ -799,7 +895,11 @@ export class WorldMesh {
     const arms = new InstanceSet(armGeo, poleMat);
     for (let i = 0; i < poleCount; i++) {
       const s = i * 90 + 40;
-      route.positionAt(s, -(route.halfWidthAt(s) + 6), _p);
+      const kind = route.kindAt(s);
+      if (kind === 'downtown' || kind === 'freeway' || kind === 'ramp') continue;
+      // Behind the footway rather than standing in it.
+      const back = Corridor.isBuiltUp(kind) ? this.footwayWidth(s) - 1.2 : 6;
+      route.positionAt(s, -(route.halfWidthAt(s) + back), _p);
       const h = this.ground.heightAt(_p.x, _p.z);
       const heading = route.headingAt(s);
       _dummy.position.set(_p.x, h + 5.5, _p.z);
@@ -816,32 +916,14 @@ export class WorldMesh {
   }
 
   // ---------------------------------------------------------------------------
-  // Cloverdale
+  // The city
   // ---------------------------------------------------------------------------
 
-  /**
-   * The built-up section: kerbs, footways, houses, driveways and street
-   * lighting.
-   *
-   * This is scenery, but it is the scenery that tells the driver what kind of
-   * road he is on. A five-lane arterial with nothing beside it reads as a wide
-   * empty highway; the same road with houses set back thirty feet, a mailbox at
-   * the end of every drive and a light on every other pole reads as somewhere
-   * people live, which is the reason the move is being escorted through it at
-   * thirty-five miles an hour with a unit on every light.
-   */
-  buildTown() {
+  buildCity() {
     const route = this.route;
-    const spans = [];
-    // Find the stretches that are actually built up.
-    let start = null;
-    for (let s = 0; s <= route.length; s += 20) {
-      const suburban = route.kindAt(s) === 'suburban';
-      if (suburban && start === null) start = s;
-      if (!suburban && start !== null) { spans.push([start, s]); start = null; }
-    }
-    if (start !== null) spans.push([start, route.length]);
-    this.townSpans = spans;
+    // Everywhere the road runs between buildings rather than past them.
+    const spans = this.spansWhere((kind) => Corridor.isBuiltUp(kind));
+    this.citySpans = spans;
     if (!spans.length) return;
 
     // Both ribbons are drawn double-sided: which way round a strip is wound
@@ -851,177 +933,176 @@ export class WorldMesh {
     const kerbMat = new MeshStandardMaterial({ color: 0xbdbab2, roughness: 0.9, side: DoubleSide });
 
     // --- Kerb and footway ---------------------------------------------------
+    // A city footway is wide and it starts at the kerb, which is why there is no
+    // shoulder to put a broken-down car on and why the load's mirrors are the
+    // thing to watch downtown.
     const walk = { positions: [], indices: [] };
     const kerb = { positions: [], indices: [] };
     for (const [a, b] of spans) {
       for (const side of [-1, 1]) {
         this.addRibbon(kerb, {
-          from: a, to: b, height: 0.14,
+          from: a, to: b, height: 0.16,
           innerAt: (s) => side * route.halfWidthAt(s),
-          outerAt: (s) => side * (route.halfWidthAt(s) + 0.25),
+          outerAt: (s) => side * (route.halfWidthAt(s) + 0.3),
         });
         this.addRibbon(walk, {
-          from: a, to: b, height: 0.15,
-          innerAt: (s) => side * (route.halfWidthAt(s) + 0.9),
-          outerAt: (s) => side * (route.halfWidthAt(s) + 2.5),
+          from: a, to: b, height: 0.17,
+          innerAt: (s) => side * (route.halfWidthAt(s) + 0.3),
+          outerAt: (s) => side * (route.halfWidthAt(s) + this.footwayWidth(s)),
         });
       }
     }
     this.group.add(this.ribbonMesh(kerb, kerbMat), this.ribbonMesh(walk, concrete));
 
-    // --- Houses -------------------------------------------------------------
-    const wallGeo = new BoxGeometry(11, 3.4, 8.5);
-    // A four-sided cone is a hipped roof. It used to be a 16.8 m pyramid over an
-    // 11 x 8.5 house -- hanging a full storey out past the walls on every side,
-    // which is what made a street of these read as a row of dark plates on
-    // sticks rather than as houses.
-    //
-    // Turned 45 degrees and stretched to the plan *in the geometry* rather than
-    // on the instance, because an instance matrix scales before it rotates: a
-    // scale applied to an already-turned roof stretches its diagonals, not its
-    // eaves. Done here, the instance is free to scale it with the walls.
-    const eave = 1.06;                       // slight overhang past the wall
-    const roofGeo = new ConeGeometry(1, 2.6, 4)
-      .rotateY(Math.PI / 4)
-      .scale(11 * 0.5 * eave * Math.SQRT2, 1, 8.5 * 0.5 * eave * Math.SQRT2);
-    // Laid flat at build time so an instance's local +Z is its length. That
-    // lets each drive be aimed at its own house with `lookAt`, which picks up
-    // the fall of the ground between the kerb and the door -- a driveway placed
-    // flat at one height buries its own bottom end in the verge.
-    const driveGeo = new PlaneGeometry(4.2, 1).rotateX(-Math.PI / 2);
-    const wallMat = new MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
-    const roofMat = new MeshStandardMaterial({ color: 0x4a4744, roughness: 0.95 });
-    const driveMat = new MeshStandardMaterial({ color: 0x8d8a84, roughness: 0.95 });
-    const boxGeo = new BoxGeometry(0.28, 0.22, 0.42);
-    const postGeo = new CylinderGeometry(0.05, 0.05, 1.1, 5);
-    const boxMat = new MeshStandardMaterial({ color: 0x39424c, roughness: 0.7, metalness: 0.3 });
-    const woodMat = new MeshStandardMaterial({ color: 0x6b5844, roughness: 0.95 });
+    this.buildBuildings(spans);
+    this.buildStreetLighting(spans);
+  }
 
-    // Openings on the wall that faces the road. A house without them is a shed,
-    // and a street of sheds is what the town looked like -- the setback, the
-    // driveway and the mailbox all say "somewhere people live" and then the
-    // building itself says nothing. Three panes and a door, one instanced mesh
-    // for the whole town, at the cost of four triangles a house.
-    const glazingGeo = new BoxGeometry(7.4, 1.15, 0.12);
-    const doorGeo = new BoxGeometry(1.0, 2.1, 0.12);
-    const glazingMat = new MeshStandardMaterial({
-      color: 0x2b3540, roughness: 0.15, metalness: 0.1,
-    });
-    const doorMat = new MeshStandardMaterial({ color: 0x53402e, roughness: 0.8 });
+  /**
+   * How far the paving reaches back from the kerb before the buildings start.
+   *
+   * Generous downtown, narrower on the arterials, and in the industrial
+   * districts it is a hardstanding rather than a footway. The buildings are set
+   * to stand right at the back of it, because a city block with a lawn between
+   * the pavement and the building line is a business park, not a city.
+   */
+  footwayWidth(s) {
+    const kind = this.route.kindAt(s);
+    if (kind === 'downtown') return 8.0;
+    if (kind === 'urban') return 5.5;
+    return 4.5;
+  }
 
-    const lots = [];
-    for (const [a, b] of spans) {
-      for (let s = a + 20; s < b - 20; s += 26 + Math.random() * 10) {
+  /**
+   * The buildings.
+   *
+   * This is scenery, but it is the scenery that tells the driver where he is. A
+   * five-lane arterial with nothing beside it reads as an empty highway; the
+   * same road with a wall of glass down both sides and the sky in a slot above
+   * it reads as downtown, which is the reason the move is crawling through it at
+   * twenty-five with a unit on every light.
+   *
+   * Three kinds go up, chosen by the road: towers downtown, three and four
+   * storey blocks along the arterials, and long low sheds in the industrial
+   * districts. Each is a handful of fixed sizes so that one instanced mesh per
+   * size covers the whole city and the facade texture is never stretched to
+   * something it was not drawn for.
+   */
+  buildBuildings(spans) {
+    const route = this.route;
+
+    // Fixed catalogue: [width, height, depth, style]. Nothing is scaled on the
+    // instance, because a facade that is stretched by its instance matrix has
+    // windows of a different size on every building.
+    const catalogue = {
+      downtown: [
+        [22, 54, 20, 'tower'], [18, 38, 18, 'tower'], [26, 72, 22, 'tower'],
+        [20, 26, 18, 'block'], [24, 44, 20, 'tower'],
+      ],
+      urban: [
+        [18, 12, 14, 'block'], [22, 9, 16, 'block'], [15, 15, 13, 'block'],
+        [26, 7, 18, 'shop'],
+      ],
+      industrial: [
+        [34, 9, 26, 'shed'], [26, 7, 20, 'shed'], [44, 11, 30, 'shed'],
+      ],
+    };
+
+    // One instanced set per catalogue entry, keyed so a lot can find the set for
+    // whatever it decided to put up.
+    const sets = new Map();
+    for (const [kind, list] of Object.entries(catalogue)) {
+      list.forEach((entry, i) => {
+        const [w, h, , style] = entry;
+        const geo = new BoxGeometry(w, h, entry[2]);
+        const mat = new MeshStandardMaterial({
+          map: makeFacadeTexture(w, h, style),
+          roughness: style === 'tower' ? 0.4 : 0.85,
+          metalness: style === 'tower' ? 0.25 : 0.05,
+        });
+        sets.set(`${kind}${i}`, new InstanceSet(geo, mat, { castShadow: true, receiveShadow: true }));
+      });
+    }
+
+    // Every parapet in the city is one instanced unit cube scaled to its
+    // building. A separate set per building size would be a dozen more draw
+    // calls per chunk for a plain grey slab that nothing is textured on.
+    const roofMat = new MeshStandardMaterial({ color: 0x4a4a48, roughness: 0.95 });
+    const roofs = new InstanceSet(new BoxGeometry(1, 1, 1), roofMat, { castShadow: true });
+
+    const tint = new Color();
+    const palettes = {
+      downtown: [0x9aa4b0, 0x8f9aa6, 0xa8a49c, 0x7f8b98, 0xb0aca4],
+      urban: [0xc9beb0, 0xb9a898, 0xc4c0b6, 0xa89c92, 0xd0c6ba],
+      industrial: [0x9fa5a8, 0xb0aca2, 0x8e9498],
+    };
+
+    let placed = 0;
+    for (const [from, to] of spans) {
+      const kind = route.kindAt((from + to) * 0.5);
+      const list = catalogue[kind] ?? catalogue.urban;
+      const palette = palettes[kind] ?? palettes.urban;
+      const spacing = kind === 'downtown' ? 30 : kind === 'industrial' ? 52 : 32;
+
+      // How far back the rows of buildings stand. Downtown gets a second and a
+      // third row, which is what closes the view off at the end of a side street
+      // instead of showing open country a block away.
+      const rows = kind === 'downtown' ? [0, 46, 96] : kind === 'urban' ? [0, 44] : [0];
+
+      for (let s = from + 24; s < to - 24; s += spacing * (0.8 + Math.random() * 0.5)) {
         for (const side of [-1, 1]) {
-          if (this.nearJunction(s, side, 30)) continue;
-          if (Math.random() < 0.12) continue;   // a gap, a park, a lot for sale
-          lots.push({ s, side, setback: 14 + Math.random() * 7, yaw: (Math.random() - 0.5) * 0.12 });
+          for (const row of rows) {
+            // Leave the junction mouths open, and let a lot go empty now and
+            // then: a car park, a plaza, a site with a crane on it.
+            if (row === 0 && this.nearJunction(s, side, 32)) continue;
+            if (Math.random() < (row ? 0.3 : 0.12)) continue;
+
+            const i = Math.floor(Math.random() * list.length);
+            const [w, h, d] = list[i];
+            // Downtown builds tall in the middle of the district and lower at
+            // its edges, which is what makes a skyline rather than a wall.
+            const centreness = 1 - Math.abs(((s - from) / (to - from)) * 2 - 1);
+            if (kind === 'downtown' && h > 40 && centreness < 0.12 + Math.random() * 0.35) continue;
+
+            const stand = route.halfWidthAt(s) + this.footwayWidth(s) + d * 0.5 + 0.4 + row;
+            const lateral = side * stand;
+            route.positionAt(s, lateral, _p);
+            const ground = this.ground.heightAt(_p.x, _p.z);
+            const heading = route.headingAt(s) + Math.PI / 2 + (Math.random() - 0.5) * 0.05;
+
+            _dummy.position.set(_p.x, ground + h * 0.5, _p.z);
+            _dummy.rotation.set(0, heading, 0);
+            _dummy.scale.setScalar(1);
+            _dummy.updateMatrix();
+            tint.setHex(palette[placed % palette.length]);
+            sets.get(`${kind}${i}`).push(s, _dummy.matrix, tint);
+
+            _dummy.position.y = ground + h + 0.5;
+            _dummy.scale.set(w + 0.5, 1.0, d + 0.5);
+            _dummy.updateMatrix();
+            roofs.push(s, _dummy.matrix);
+            placed++;
+          }
         }
       }
     }
 
-    const walls = new InstanceSet(wallGeo, wallMat, { castShadow: true, receiveShadow: true });
-    const roofs = new InstanceSet(roofGeo, roofMat, { castShadow: true });
-    const glazing = new InstanceSet(glazingGeo, glazingMat);
-    const doors = new InstanceSet(doorGeo, doorMat);
-    const drives = new InstanceSet(driveGeo, driveMat);
-    const boxes = new InstanceSet(boxGeo, boxMat);
-    const posts = new InstanceSet(postGeo, woodMat);
+    // Towers are worth seeing from a long way off -- they are most of what says
+    // "city" from the freeway -- so they carry the tree range rather than the
+    // street-furniture one.
+    for (const set of sets.values()) set.build(this.group, this.ranged, TREE_RANGE);
+    roofs.build(this.group, this.ranged, DETAIL_RANGE);
+    this.buildingCount = placed;
+  }
 
-    const paint = new Color();
-    const palette = [0xd6d2c6, 0xc9d3d6, 0xd8c9b6, 0xbfc9b6, 0xd6c2c2, 0xcfcfd6];
-
-    lots.forEach((lot, i) => {
-      const kerb = route.halfWidthAt(lot.s) + 2.8;
-      const lateral = lot.side * (kerb + lot.setback);
-      route.positionAt(lot.s, lateral, _p);
-      const h = this.ground.heightAt(_p.x, _p.z);
-      // Turned so the long wall faces the road, which is what makes a row of
-      // them read as a street rather than as a field of sheds.
-      const heading = route.headingAt(lot.s) + lot.yaw + Math.PI / 2;
-
-      const spread = 0.8 + Math.random() * 0.35;
-      const depth = 0.85 + Math.random() * 0.3;
-      _dummy.position.set(_p.x, h + 1.7, _p.z);
-      _dummy.rotation.set(0, heading, 0);
-      _dummy.scale.set(spread, 1, depth);
-      _dummy.updateMatrix();
-      paint.setHex(palette[i % palette.length]);
-      walls.push(lot.s, _dummy.matrix, paint);
-
-      // Windows and a front door, on the face that looks at the road. Which face
-      // that is depends on which side of the road the lot is: the wall is turned
-      // to run along the highway, so its local +Z points back across it, and a
-      // house on the far side wants the opposite one.
-      const faceX = Math.sin(heading);
-      const faceZ = Math.cos(heading);
-      const alongX = Math.cos(heading);
-      const alongZ = -Math.sin(heading);
-      const out = lot.side * (8.5 * depth * 0.5 + 0.07);
-      _dummy.scale.setScalar(1);
-
-      _dummy.position.set(_p.x + faceX * out, h + 2.15, _p.z + faceZ * out);
-      _dummy.updateMatrix();
-      glazing.push(lot.s, _dummy.matrix);
-
-      const doorAlong = (i % 2 ? 1 : -1) * 3.1 * spread;
-      _dummy.position.set(
-        _p.x + faceX * out + alongX * doorAlong,
-        h + 1.05,
-        _p.z + faceZ * out + alongZ * doorAlong
-      );
-      _dummy.updateMatrix();
-      doors.push(lot.s, _dummy.matrix);
-
-      // Sat on the wall top and stretched with the same spread and depth the
-      // walls got, so a wide house has a wide roof rather than the one roof size
-      // sitting on every plan.
-      _dummy.position.y = h + 4.6;
-      _dummy.rotation.set(0, heading, 0);
-      _dummy.scale.set(spread, 1, depth);
-      _dummy.updateMatrix();
-      roofs.push(lot.s, _dummy.matrix);
-
-      // Driveway, running straight out from the kerb to the front of the house.
-      // Both ends are taken at the same station so it leaves the road square
-      // rather than skewing across the lawn.
-      const driveS = lot.s + 6;
-      const nearLateral = lot.side * (route.halfWidthAt(driveS) - 0.5);
-      const farLateral = lot.side * (kerb + lot.setback - 3);
-      route.positionAt(driveS, nearLateral, _q);
-      const nearY = this.ground.heightAt(_q.x, _q.z);
-      const nearX = _q.x;
-      const nearZ = _q.z;
-      route.positionAt(driveS, farLateral, _q);
-      const farY = this.ground.heightAt(_q.x, _q.z);
-
-      _dummy.position.set((nearX + _q.x) / 2, (nearY + farY) / 2 + 0.05, (nearZ + _q.z) / 2);
-      _dummy.scale.set(1, 1, Math.hypot(_q.x - nearX, farY - nearY, _q.z - nearZ));
-      _dummy.up.set(0, 1, 0);
-      _dummy.lookAt(_q.x, farY + 0.05, _q.z);
-      _dummy.updateMatrix();
-      drives.push(lot.s, _dummy.matrix);
-
-      // Mailbox at the end of it.
-      route.positionAt(driveS, lot.side * (route.halfWidthAt(lot.s) + 3.2), _q);
-      const mh = this.ground.heightAt(_q.x, _q.z);
-      _dummy.rotation.set(0, heading, 0);
-      _dummy.scale.setScalar(1);
-      _dummy.position.set(_q.x, mh + 1.18, _q.z);
-      _dummy.updateMatrix();
-      boxes.push(lot.s, _dummy.matrix);
-      _dummy.position.y = mh + 0.55;
-      _dummy.updateMatrix();
-      posts.push(lot.s, _dummy.matrix);
-    });
-
-    walls.build(this.group, this.ranged, TREE_RANGE);
-    roofs.build(this.group, this.ranged, TREE_RANGE);
-    for (const set of [glazing, doors, drives, boxes, posts]) {
-      set.build(this.group, this.ranged, DETAIL_RANGE);
-    }
-
-    // --- Street lighting ----------------------------------------------------
+  /**
+   * Street lighting.
+   *
+   * On alternate sides, reaching out over the kerb lane, which is where the
+   * light is wanted and why every one of these leans over the road.
+   */
+  buildStreetLighting(spans) {
+    const route = this.route;
     const lightPoleGeo = new CylinderGeometry(0.11, 0.15, 8.4, 8);
     const armGeo = new BoxGeometry(0.10, 0.10, 2.0);
     const headGeo = new BoxGeometry(0.42, 0.16, 0.9);
@@ -1032,7 +1113,7 @@ export class WorldMesh {
 
     const stations = [];
     for (const [a, b] of spans) {
-      for (let s = a + 30, n = 0; s < b - 10; s += 55, n++) {
+      for (let s = a + 30, n = 0; s < b - 10; s += 48, n++) {
         stations.push({ s, side: n % 2 === 0 ? 1 : -1 });
       }
     }
@@ -1041,7 +1122,7 @@ export class WorldMesh {
     const lightHeads = new InstanceSet(headGeo, lens);
 
     stations.forEach((st) => {
-      const lateral = st.side * (route.halfWidthAt(st.s) + 1.0);
+      const lateral = st.side * (route.halfWidthAt(st.s) + 1.2);
       route.positionAt(st.s, lateral, _p);
       const h = this.ground.heightAt(_p.x, _p.z);
       const heading = route.headingAt(st.s);
@@ -1051,8 +1132,6 @@ export class WorldMesh {
       _dummy.updateMatrix();
       lightPoles.push(st.s, _dummy.matrix);
 
-      // The arm reaches out over the kerb lane, which is where the light is
-      // wanted and why every one of these leans over the road.
       route.positionAt(st.s, lateral - st.side * 1.1, _q);
       _dummy.position.set(_q.x, h + 8.3, _q.z);
       _dummy.rotation.set(0, heading + Math.PI / 2, 0);
@@ -1066,6 +1145,34 @@ export class WorldMesh {
       lightHeads.push(st.s, _dummy.matrix);
     });
     for (const set of [lightPoles, lightArms, lightHeads]) set.build(this.group, this.ranged, DETAIL_RANGE);
+  }
+
+  /**
+   * The concrete barrier down the middle of the interstate.
+   *
+   * It is the reason the freeway reads as a freeway from the cab rather than as
+   * a very wide street: there is no oncoming traffic to be seen, only a wall a
+   * metre from the load's left-hand outriggers.
+   */
+  buildMedianBarrier() {
+    const route = this.route;
+    const spans = this.spansWhere((kind, s) => route.corridor.centre(s) === 'barrier');
+    if (!spans.length) return;
+
+    const mat = new MeshStandardMaterial({ color: 0xb4b1a8, roughness: 0.92 });
+    const geo = new BoxGeometry(0.62, 0.92, 4.0);
+    const barrier = new InstanceSet(geo, mat, { castShadow: true, receiveShadow: true });
+    for (const [a, b] of spans) {
+      for (let s = a; s < b; s += 4) {
+        route.positionAt(s, 0, _p);
+        _dummy.position.set(_p.x, _p.y + 0.46, _p.z);
+        _dummy.rotation.set(0, route.headingAt(s), 0);
+        _dummy.scale.setScalar(1);
+        _dummy.updateMatrix();
+        barrier.push(s, _dummy.matrix);
+      }
+    }
+    barrier.build(this.group, this.ranged, DETAIL_RANGE);
   }
 
   /**
@@ -1216,10 +1323,11 @@ export class WorldMesh {
     for (const j of route.junctions) {
       const sample = route.at(j.s);
       const halfWidth = route.halfWidthAt(j.s);
-      const roadWidth = j.signal ? 11.0 : 7.4;
-      // Long enough to read as a road going somewhere, short enough that in town
-      // it stays on the graded ground rather than running off the edge of it.
-      const length = route.kindAt(j.s) === 'suburban' ? 62 : 90;
+      const roadWidth = j.signal ? 14.0 : 8.0;
+      // Long enough to read as a street going somewhere. In the city it can run
+      // right out to the buildings, because the ground under them was graded
+      // flat when the place was built.
+      const length = Corridor.isBuiltUp(route.kindAt(j.s)) ? 120 : 90;
 
       const sides = j.crossing ? [1, -1] : [j.side];
       for (const side of sides) {
@@ -1312,24 +1420,31 @@ export class WorldMesh {
 
     const tex = new CanvasTexture(canvas);
     tex.colorSpace = SRGBColorSpace;
-    const sign = new Mesh(
-      new PlaneGeometry(2.6, 0.49),
-      new MeshBasicMaterial({ map: tex, side: DoubleSide })
-    );
+    const geo = new PlaneGeometry(2.6, 0.49);
+    const mat = new MeshBasicMaterial({ map: tex });
 
     const pos = sample.position.clone()
       .addScaledVector(dir, this.route.halfWidthAt(junction.s) + 2.5);
-    sign.position.set(pos.x, pos.y + 3.0, pos.z);
-    sign.rotation.y = Math.atan2(sample.tangent.x, sample.tangent.z);
+    const heading = Math.atan2(sample.tangent.x, sample.tangent.z);
+
+    const g = new Group();
+    // Two boards back to back rather than one drawn double-sided. A single plane
+    // seen from behind shows the text mirrored, which at a four-way is half the
+    // signs on the route -- and a street name you have to read in a mirror is
+    // worse than no sign at all.
+    for (const face of [0, Math.PI]) {
+      const board = new Mesh(geo, mat);
+      board.position.set(pos.x, pos.y + 3.0, pos.z);
+      board.rotation.y = heading + face;
+      g.add(board);
+    }
 
     const post = new Mesh(
       new CylinderGeometry(0.06, 0.06, 3.0, 6),
       new MeshStandardMaterial({ color: 0x777c82, metalness: 0.7, roughness: 0.5 })
     );
     post.position.set(pos.x, pos.y + 1.5, pos.z);
-
-    const g = new Group();
-    g.add(sign, post);
+    g.add(post);
     return g;
   }
 
@@ -1480,13 +1595,73 @@ export class WorldMesh {
   // Signing
   // ---------------------------------------------------------------------------
 
-  /** Speed limit signs wherever the posted limit changes. */
+  /** Speed limit signs wherever the posted limit changes, and the guide signs. */
   buildSigns() {
     const route = this.route;
     for (const change of route.corridor.limitChanges()) {
       if (change.s < 10) continue;
       this.group.add(this.makeSpeedSign(change.s + 25, change.limitMph));
     }
+    for (const sign of route.guideSigns ?? []) {
+      this.group.add(this.makeGuideSign(sign));
+    }
+  }
+
+  /**
+   * A green guide sign on two posts.
+   *
+   * The ramps are the only places on this route where the driver has to know
+   * something the road itself does not tell him -- which way the interstate
+   * goes, and which exit comes off it -- and a sign is how a road says that.
+   */
+  makeGuideSign(sign) {
+    const route = this.route;
+    const lines = sign.text.split('\n');
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128 * lines.length;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#0d5c2f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(9, 9, canvas.width - 18, canvas.height - 18);
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    lines.forEach((line, i) => {
+      ctx.font = `bold ${i === 0 ? 62 : 48}px Arial`;
+      ctx.fillText(line, canvas.width / 2, (i + 0.5) * (canvas.height / lines.length));
+    });
+
+    const tex = new CanvasTexture(canvas);
+    tex.colorSpace = SRGBColorSpace;
+    const width = 4.6;
+    const height = (width * canvas.height) / canvas.width;
+    const board = new Mesh(
+      new PlaneGeometry(width, height),
+      new MeshBasicMaterial({ map: tex, side: DoubleSide })
+    );
+
+    const side = sign.side ?? 1;
+    const lateral = side * (route.halfWidthAt(sign.s) + 2.6);
+    route.positionAt(sign.s, lateral, _p);
+    const ground = this.ground.heightAt(_p.x, _p.z);
+    const heading = route.headingAt(sign.s) + Math.PI;
+    board.position.set(_p.x, ground + 5.2, _p.z);
+    board.rotation.y = heading;
+
+    const g = new Group();
+    g.add(board);
+    const postMat = new MeshStandardMaterial({ color: 0x777c82, metalness: 0.7, roughness: 0.5 });
+    for (const dx of [-width * 0.32, width * 0.32]) {
+      const post = new Mesh(new CylinderGeometry(0.09, 0.09, 5.2, 6), postMat);
+      post.position.set(
+        _p.x + Math.cos(heading) * dx, ground + 2.6, _p.z - Math.sin(heading) * dx
+      );
+      g.add(post);
+    }
+    return g;
   }
 
   makeSpeedSign(s, limitMph) {

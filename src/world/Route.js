@@ -15,6 +15,16 @@ const _b = new Vector3();
  * crew has to manage: side roads to block, a bridge with a posted clearance, a
  * corner too tight to take without swinging wide, and a grade long enough to
  * cook the brakes.
+ *
+ * This one runs across a city, which is a different job from running one down a
+ * county highway. The load does not simply follow a road: it turns off one
+ * arterial onto another at signalised intersections, six times, and each of
+ * those turns is a corner taken at walking pace across every lane of the
+ * junction with a unit holding the light. Between them it goes up onto an
+ * interstate at a loop ramp, runs the freeway with the traffic, and comes off
+ * again at an exit. Almost everything below follows from that: the number of
+ * lanes, what runs down the middle of the road, where the pavement widens, and
+ * why the escort work is lights rather than roadblocks for most of the move.
  */
 export class Route {
   constructor() {
@@ -31,32 +41,55 @@ export class Route {
     const at = (name) => survey.at(name);
 
     // --- Cross-section ------------------------------------------------------
-    // The route is five different roads. It leaves the yard on a industrial spur,
-    // turns onto a two-lane county highway, climbs a ridge on something narrower
-    // than that, drops into the valley, and comes into Cloverdale as a five-lane
-    // suburban arterial with a centre turn lane and a signal every quarter mile.
-    // Nearly everything the other vehicles on the road do follows from which of
-    // those they are currently on.
+    // Seven different roads. It leaves the port on an industrial spur, turns onto
+    // a dock arterial, works across the city on two boulevards and a downtown
+    // street, climbs over Prospect Hill, goes up a loop ramp onto the interstate,
+    // comes off at an exit onto another arterial, and finishes on the industrial
+    // road out to Northgate. Nearly everything the other vehicles on the road do
+    // follows from which of those they are currently on.
     //
-    // The turns onto each new road carry extra shoulder. That is not decoration:
-    // a 87 ft combination swinging through a hundred-metre radius puts its rear
-    // axles well inside the tractor's path, and the widening is the pavement that
-    // has to be there for the trailer to track across.
+    // Every turn carries extra shoulder through the intersection. That is not
+    // decoration: a combination between 64 and 249 feet long swinging through a
+    // sixty-metre radius puts its rear axles well inside the tractor's path, and
+    // the widening is the pavement that has to be there for the trailer to track
+    // across. It is why the units close the whole junction rather than one arm
+    // of it.
     this.corridor = new Corridor([
-      { s: 0, name: 'Bennett yard road', kind: 'industrial', lanes: 1, median: 0, shoulder: 2.6, limitMph: 30 },
-      { s: at('onto CH14'), name: 'County Highway 14', kind: 'rural', lanes: 1, median: 0, shoulder: 4.6, limitMph: 45, taper: 120 },
-      { s: at('CH14 settled'), name: 'County Highway 14', kind: 'rural', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45, taper: 140 },
-      { s: at('CR9 turn'), name: 'County Highway 14', kind: 'rural', lanes: 1, median: 0, shoulder: 4.4, limitMph: 45, taper: 110 },
-      { s: at('CR9 settled'), name: 'County Highway 14', kind: 'rural', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45, taper: 130 },
-      { s: at('onto Ridge Road'), name: 'Ridge Road', kind: 'mountain', lanes: 1, median: 0, shoulder: 1.3, limitMph: 35, taper: 150 },
-      { s: at('switchback'), name: 'Ridge Road', kind: 'mountain', lanes: 1, median: 0, shoulder: 4.2, limitMph: 35, taper: 90 },
-      { s: at('switchback out'), name: 'Ridge Road', kind: 'mountain', lanes: 1, median: 0, shoulder: 1.3, limitMph: 35, taper: 110 },
-      { s: at('onto Valley Road'), name: 'Valley Road', kind: 'rural', lanes: 1, median: 0, shoulder: 4.4, limitMph: 45, taper: 120 },
-      { s: at('Valley settled'), name: 'Valley Road', kind: 'rural', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45, taper: 140 },
-      // The town line. The extra lane opens over a 140 m taper, which is why the
-      // pavement widens well before there is a second lane to drive in.
-      { s: at('town line'), name: 'Cloverdale Pike', kind: 'suburban', lanes: 2, median: 3.7, shoulder: 1.6, limitMph: 35, taper: 140 },
-      { s: at('substation turn'), name: 'Substation approach', kind: 'industrial', lanes: 1, median: 0, shoulder: 3.6, limitMph: 25, taper: 120 },
+      { s: 0, name: 'Terminal Way', kind: 'industrial', lanes: 1, median: 0, shoulder: 2.8, limitMph: 25 },
+      // Out of the port gate and round onto the dock arterial.
+      { s: at('onto Dock Street') - 70, name: 'Terminal Way', kind: 'industrial', lanes: 1, median: 0, shoulder: 7.4, limitMph: 25, taper: 150 },
+      { s: at('onto Dock Street') + 170, name: 'Dock Street', kind: 'urban', lanes: 2, median: 3.7, shoulder: 1.8, limitMph: 30, taper: 150 },
+
+      { s: at('onto Harbor Boulevard') - 70, name: 'Dock Street', kind: 'urban', lanes: 2, median: 3.7, shoulder: 6.4, limitMph: 30, taper: 150 },
+      { s: at('onto Harbor Boulevard') + 180, name: 'Harbor Boulevard', kind: 'urban', lanes: 2, median: 4.2, shoulder: 2.0, limitMph: 35, taper: 150 },
+
+      { s: at('onto Market Street') - 70, name: 'Harbor Boulevard', kind: 'urban', lanes: 2, median: 4.2, shoulder: 6.4, limitMph: 30, taper: 150 },
+      // Downtown: the same two lanes each way, but a narrower turn lane, kerbs
+      // hard against the running lane and a 25 sign.
+      { s: at('onto Market Street') + 170, name: 'Market Street', kind: 'downtown', lanes: 2, median: 3.4, shoulder: 1.2, limitMph: 25, taper: 190 },
+
+      { s: at('onto Prospect Hill') - 70, name: 'Market Street', kind: 'downtown', lanes: 2, median: 3.4, shoulder: 6.4, limitMph: 25, taper: 150 },
+      // Over the hill: one lane each way and a double yellow, which is the one
+      // stretch in the city where oncoming traffic has nowhere to go but the
+      // kerb — and it is also the nine percent.
+      { s: at('onto Prospect Hill') + 180, name: 'Prospect Hill Road', kind: 'urban', lanes: 1, median: 0, shoulder: 1.6, limitMph: 30, taper: 320 },
+
+      // The loop ramp: one lane, a 25 sign on the curve, and the widest shoulder
+      // on the route because it is the tightest corner on it.
+      { s: at('ramp') - 80, name: 'I-118 north on-ramp', kind: 'ramp', lanes: 1, median: 0, shoulder: 5.6, limitMph: 25, taper: 140 },
+      { s: at('ramp') + 150, name: 'I-118 north on-ramp', kind: 'ramp', lanes: 1, median: 0, shoulder: 2.8, limitMph: 35, taper: 140 },
+      // Three lanes each way behind a barrier. The pavement reaches freeway
+      // width over the length of the acceleration lane while there is still only
+      // one lane to drive in, which is what a merge is.
+      { s: at('merge'), name: 'Interstate 118', kind: 'freeway', lanes: 3, median: 4.4, shoulder: 3.2, limitMph: 55, centre: 'barrier', taper: 320 },
+      { s: at('exit'), name: 'I-118 exit 14', kind: 'ramp', lanes: 1, median: 0, shoulder: 4.0, limitMph: 35, taper: 300 },
+
+      { s: at('Meridian settled'), name: 'Meridian Avenue', kind: 'urban', lanes: 2, median: 3.7, shoulder: 1.8, limitMph: 35, taper: 160 },
+      { s: at('onto Foundry Road') - 70, name: 'Meridian Avenue', kind: 'urban', lanes: 2, median: 3.7, shoulder: 6.4, limitMph: 30, taper: 150 },
+      { s: at('onto Foundry Road') + 170, name: 'Foundry Road', kind: 'industrial', lanes: 1, median: 0, shoulder: 2.6, limitMph: 30, taper: 320 },
+
+      { s: at('substation turn') - 60, name: 'Northgate gate', kind: 'industrial', lanes: 1, median: 0, shoulder: 6.0, limitMph: 25, taper: 150 },
+      { s: at('substation turn') + 150, name: 'Northgate yard', kind: 'industrial', lanes: 1, median: 0, shoulder: 3.2, limitMph: 20, taper: 150 },
     ], { laneWidth: this.laneWidth });
 
     // Widest the road ever gets. Callers that need a single number -- spatial
@@ -73,21 +106,30 @@ export class Route {
     // four-way, which is a road going both ways rather than a road ending on
     // this one. Signalised junctions are held by taking the light rather than by
     // parking a unit across the mouth.
+    // Six of these are intersections the load turns at, which is the whole
+    // difference between escorting a move across a city and down a highway. The
+    // unit does not just hold the cross street: it takes the light, stops every
+    // approach including the one behind the load, and the combination swings
+    // through the box using all of it.
     this.junctions = [
-      { s: at('Kesler Road'), name: 'Kesler Road', side: -1 },
-      { s: at('Old Mill Road'), name: 'Old Mill Road', side: 1 },
-      { s: at('County Route 9'), name: 'County Route 9', side: -1, signal: true, crossing: true },
-      { s: at('Quarry Road'), name: 'Quarry Road', side: 1 },
-      { s: at('Ridge Fire Road'), name: 'Ridge Fire Road', side: -1 },
-      { s: at('Harmon Pike'), name: 'Harmon Pike', side: 1 },
-      { s: at('Valley Road junction'), name: 'Valley Road', side: -1, signal: true, crossing: true },
-      // --- Cloverdale ------------------------------------------------------
-      { s: at('Beltline Connector'), name: 'Beltline Connector', side: 1, signal: true, crossing: true },
-      { s: at('Maple Street'), name: 'Maple Street', side: -1 },
-      { s: at('Fairview Drive'), name: 'Fairview Drive', side: 1, signal: true, crossing: true },
-      { s: at('Cement Plant Road'), name: 'Cement Plant Road', side: -1 },
-      { s: at('Sycamore Lane'), name: 'Sycamore Lane', side: 1 },
-      { s: at('Cloverdale Center'), name: 'Cloverdale Center', side: -1, signal: true, crossing: true },
+      { s: at('onto Dock Street'), name: 'Terminal & Dock', side: -1, signal: true, crossing: true, turn: 'left' },
+      { s: at('Pier 9 Road'), name: 'Pier 9 Road', side: 1 },
+      { s: at('Cannery Street'), name: 'Cannery Street', side: -1, signal: true, crossing: true },
+      { s: at('onto Harbor Boulevard'), name: 'Dock & Harbor', side: 1, signal: true, crossing: true, turn: 'right' },
+      { s: at('Rail Yard Road'), name: 'Rail Yard Road', side: -1 },
+      { s: at('Wharf Street'), name: 'Wharf Street', side: 1, signal: true, crossing: true },
+      { s: at('onto Market Street'), name: 'Harbor & Market', side: -1, signal: true, crossing: true, turn: 'left' },
+      // --- Downtown ---------------------------------------------------------
+      { s: at('Third Street'), name: 'Third Street', side: 1, signal: true, crossing: true },
+      { s: at('Exchange Place'), name: 'Exchange Place', side: -1 },
+      { s: at('onto Prospect Hill'), name: 'Market & Prospect', side: 1, signal: true, crossing: true, turn: 'right' },
+      // --- Over the hill and onto the interstate -----------------------------
+      { s: at('Prospect & Canal'), name: 'Prospect & Canal', side: -1, signal: true, crossing: true },
+      // --- Off the freeway and out to Northgate ------------------------------
+      { s: at('Meridian & Canal'), name: 'Meridian & Canal', side: 1, signal: true, crossing: true },
+      { s: at('Tanner Street'), name: 'Tanner Street', side: -1 },
+      { s: at('onto Foundry Road'), name: 'Meridian & Foundry', side: 1, signal: true, crossing: true, turn: 'right' },
+      { s: at('Kiln Street'), name: 'Kiln Street', side: -1 },
       { s: at('Substation Access'), name: 'Substation Access', side: 1 },
     ];
 
@@ -99,162 +141,183 @@ export class Route {
     // Posted vertical clearances. The lead pilot car carries a height pole set
     // just above the load; if the pole hits, the load would have hit.
     this.bridges = [
-      { s: at('CR-9 overpass'), name: 'CR-9 overpass', clearance: 5.18, span: 14 },
-      { s: at('Norfolk Southern bridge'), name: 'Norfolk Southern bridge', clearance: 5.02, span: 18 },
-      { s: at('Beltline underpass'), name: 'Beltline underpass', clearance: 5.35, span: 22 },
+      { s: at('Beacon Hill viaduct'), name: 'Beacon Hill viaduct', clearance: 5.36, span: 20 },
+      { s: at('Canal Street overpass'), name: 'Canal Street overpass', clearance: 5.28, span: 26 },
+      { s: at('Junction 14 overpass'), name: 'Junction 14 overpass', clearance: 5.14, span: 30 },
+      // The last structure on the route and the tightest: a low rail bridge over
+      // an industrial street, which is the one every permit on this route is
+      // written around.
+      { s: at('Northgate underpass'), name: 'Northgate rail underpass', clearance: 5.05, span: 16 },
     ];
 
-    // Corners the survey flagged as too tight to take at speed, where the
-    // trailer's rear axles have to be steered to keep the load in its lane.
-    // The switchback is the reason this move needs a steerman at all.
+    // The corners the survey flagged: an intersection the load turns at is a
+    // corner taken at walking pace across every lane of the junction, and the
+    // trailer's rear axles have to be steered through all of them. The loop ramp
+    // onto the interstate is the tightest thing on the route.
     this.tightCorners = [
-      { s: at('onto CH14'), name: 'Highway 14 turn', advisoryMph: 9, radius: 115 },
-      { s: at('CR9 turn'), name: 'County Route 9 turn', advisoryMph: 9, radius: 115 },
-      { s: at('onto Ridge Road'), name: 'Ridge Road turn', advisoryMph: 10, radius: 125 },
-      { s: at('switchback'), name: 'Ridge Road switchback', advisoryMph: 7, radius: 105 },
-      { s: at('onto Valley Road'), name: 'Valley Road turn', advisoryMph: 9, radius: 115 },
-      { s: at('town line'), name: 'Cloverdale Pike turn', advisoryMph: 10, radius: 120 },
-      { s: at('substation turn'), name: 'Substation gate', advisoryMph: 8, radius: 110 },
+      { s: at('onto Dock Street'), name: 'Terminal & Dock left', advisoryMph: 8, radius: 65 },
+      { s: at('onto Harbor Boulevard'), name: 'Dock & Harbor right', advisoryMph: 8, radius: 72 },
+      { s: at('onto Market Street'), name: 'Harbor & Market left', advisoryMph: 7, radius: 60 },
+      { s: at('onto Prospect Hill'), name: 'Market & Prospect right', advisoryMph: 7, radius: 62 },
+      { s: at('ramp'), name: 'I-118 loop ramp', advisoryMph: 7, radius: 58 },
+      { s: at('off ramp'), name: 'Exit 14 ramp', advisoryMph: 9, radius: 68 },
+      { s: at('onto Foundry Road'), name: 'Meridian & Foundry right', advisoryMph: 8, radius: 66 },
+      { s: at('substation turn'), name: 'Northgate gate', advisoryMph: 7, radius: 55 },
     ];
 
-    // The long descent off the ridge. Nine percent for the better part of a
-    // mile is where a loaded rig cooks its brakes if the driver rides them
-    // instead of gearing down.
+    // Prospect Hill. Nine percent for half a mile down into the canal district,
+    // with a signalised junction at the bottom of it -- which is why a unit has
+    // to have that light, and why running it is the one thing on this route that
+    // can stop the load somewhere it cannot start again.
     this.grades = [
-      { start: at('grade top'), end: at('grade bottom'), name: 'Ridge grade', percent: -9 },
+      { start: at('grade top'), end: at('grade bottom'), name: 'Prospect Hill', percent: -9 },
     ];
 
-    this.staging = { s: 40, name: 'Bennett Heavy Haul yard' };
-    this.destination = { s: at('substation'), name: 'Cloverdale Substation' };
+    // The signs that tell the driver something the road does not: where the
+    // interstate goes and which exit comes off it.
+    this.guideSigns = [
+      { s: at('ramp') - 230, text: 'I-118 NORTH\nRamp 25 MPH', side: 1 },
+      { s: at('merge') - 60, text: 'MERGE\nAcceleration lane ends', side: 1 },
+      { s: at('exit') - 640, text: 'EXIT 14\nMeridian Ave  ¾ MILE', side: 1 },
+      { s: at('exit') - 60, text: 'EXIT 14\nMeridian Ave', side: 1 },
+      { s: at('onto Foundry Road') - 300, text: 'FOUNDRY RD\nNorthgate  ½ MILE', side: 1 },
+    ];
+
+    this.staging = { s: 60, name: 'Anchor Point Terminal' };
+    this.destination = { s: at('substation'), name: 'Northgate Substation' };
   }
 
   /**
    * The survey the centreline is built from.
    *
-   * Read it as a driver would be told it: out of the yard, turn onto the county
-   * highway, follow it through the farmland, turn at the crossroads, up onto the
-   * ridge, round the switchback, down the nine percent, onto Valley Road, into
-   * town and in at the substation gate. Every corner has a stated radius, and
-   * every place anything happens is marked, so the junctions, the bridges, the
-   * grade and the cross-section are all placed from the same description rather
-   * than from a second list of numbers that has to be kept in step with it.
+   * Read it as a driver would be told it: out of the terminal, left at the
+   * lights onto Dock Street, right onto Harbor Boulevard, left into downtown,
+   * right up over Prospect Hill, down the nine percent, up the loop ramp onto
+   * I-118, off at exit 14, and right onto Foundry Road for Northgate. Every
+   * corner has a stated radius, and every place anything happens is marked, so
+   * the junctions, the bridges, the grade and the cross-section are all placed
+   * from the same description rather than from a second list of numbers that has
+   * to be kept in step with it.
+   *
+   * The turn radii are the one place this route argues with reality. A city
+   * intersection is built to a kerb radius of fifteen metres, which nothing on
+   * this list can drive round; what actually happens on a move like this is that
+   * the units stop every approach and the combination uses the whole box and
+   * both carriageways of the road it is turning into. Sixty metres on the
+   * centreline is what that manoeuvre traces out, and the pavement is widened
+   * through each junction to match.
    */
   buildSurvey() {
     const s = new Survey({ x: 0, z: 0, y: 6, heading: 0 });
 
-    // --- Out of the Bennett yard -------------------------------------------
-    s.run(210);
-    s.mark('onto CH14');
-    s.left(86, 115);                       // onto County Highway 14
-    s.run(90, 0.01);
-    s.mark('CH14 settled');
+    // --- Out of Anchor Point Terminal --------------------------------------
+    s.run(300, 0.002);
+    s.mark('onto Dock Street');
+    s.left(88, 65, 0.002);                 // first light: left onto Dock Street
+    s.run(200, 0.004);
 
-    // --- County Highway 14, across the farmland ----------------------------
-    s.run(150, 0.012);
-    s.mark('Kesler Road');
-    s.run(180, 0.012);
-    s.weave(30, 300, 0.01);                // round the back of a field
-    s.run(120, 0.006);
-    s.mark('Old Mill Road');
-    s.run(140, 0.004);
-    s.right(58, 170, 0.004);               // the highway bends north
-    s.run(200, 0.006);
-    s.mark('CR-9 overpass');
-    s.run(180, 0.008);
-    s.left(36, 240, 0.01);
-    s.run(160, 0.012);
-    s.mark('CR9 turn');
-    s.mark('County Route 9');
-    s.left(76, 115, 0.008);                // turn at the signalised crossroads
-    s.run(120, 0.012);
-    s.mark('CR9 settled');
-    s.run(200, 0.016);
-    s.weave(26, 340, 0.022);
-    s.run(140, 0.03);
-    s.mark('Quarry Road');
-    s.run(180, 0.034);
-    s.right(42, 260, 0.038);
+    // --- Dock Street, along the waterfront ---------------------------------
+    s.mark('Pier 9 Road');
+    s.run(300, 0.005);
+    s.mark('Cannery Street');
+    s.run(340, 0.006);
+    s.weave(14, 340, 0.006);
+    s.run(260, 0.008);
+    s.mark('onto Harbor Boulevard');
+    s.right(94, 72, 0.006);                // right at the light onto the boulevard
+    s.run(240, 0.01);
 
-    // --- Up onto the ridge --------------------------------------------------
-    s.run(120, 0.042);
-    s.mark('onto Ridge Road');
-    s.right(64, 125, 0.03);                // off the county highway onto the ridge road
-    s.run(220, 0.055);
-    s.left(38, 200, 0.06);
-    s.run(200, 0.058);
-    s.mark('Ridge Fire Road');
-    s.run(180, 0.05);
-    s.right(52, 180, 0.04);
-    s.run(150, 0.02);
-    s.mark('switchback');
-    s.left(158, 105, -0.01);                // the hairpin over the top
-    s.mark('switchback out');
-    s.run(140, -0.03);
+    // --- Harbor Boulevard, climbing away from the water --------------------
+    s.mark('Rail Yard Road');
+    s.run(320, 0.012);
+    s.left(16, 420, 0.014);
+    s.run(240, 0.016);
+    s.mark('Wharf Street');
+    s.run(300, 0.018);
+    s.mark('Beacon Hill viaduct');         // the city's own elevated line, over the road
+    s.run(280, 0.02);
+    s.mark('onto Market Street');
+    s.left(86, 60, 0.018);                 // left at the light, into downtown
+    s.run(220, 0.024);
 
-    // --- The nine percent ---------------------------------------------------
+    // --- Market Street, downtown -------------------------------------------
+    s.mark('Third Street');
+    s.run(300, 0.03);
+    s.right(14, 380, 0.032);
+    s.run(260, 0.034);
+    s.mark('Exchange Place');
+    s.run(300, 0.038);
+    s.mark('onto Prospect Hill');
+    s.right(82, 62, 0.04);                 // right at the light, onto the hill road
+    s.run(200, 0.06);
+
+    // --- Prospect Hill ------------------------------------------------------
+    s.run(320, 0.075);
+    s.left(30, 220, 0.06);
+    s.run(160, 0.03);
     s.mark('grade top');
-    s.right(34, 220, -0.075);
-    s.run(220, -0.09);
-    s.left(46, 260, -0.09);
-    s.run(240, -0.09);
-    s.right(30, 300, -0.09);
-    s.run(200, -0.088);
-    s.mark('Harmon Pike');
-    s.run(180, -0.08);
-    s.left(40, 280, -0.06);
-    s.run(160, -0.04);
+
+    // --- The nine percent, down into the canal district ---------------------
+    s.right(26, 200, -0.07);
+    s.run(320, -0.09);
+    s.left(32, 240, -0.09);
+    s.run(360, -0.09);
+    s.right(22, 280, -0.088);
+    s.run(220, -0.08);
     s.mark('grade bottom');
+    s.run(160, -0.04);
+    s.mark('Prospect & Canal');             // a light at the bottom of the grade
+    s.run(220, -0.012);
 
-    // --- Onto Valley Road ---------------------------------------------------
-    s.mark('onto Valley Road');
-    s.right(84, 115, -0.02);
-    s.run(120, -0.01);
-    s.mark('Valley settled');
-    s.run(160, 0);
-    s.weave(24, 340, 0);
-    s.run(140, 0.004);
-    s.mark('Norfolk Southern bridge');
-    s.run(180, 0.004);
-    s.mark('Valley Road junction');
-    s.run(220, 0.004);
-    s.left(30, 320, 0.003);
-    s.run(240, 0.002);
-    s.right(26, 300, 0.002);
-    s.run(200, 0);
+    // --- Up the loop ramp onto Interstate 118 -------------------------------
+    s.mark('ramp');
+    s.right(98, 58, 0.02);                  // the tightest corner on the route
+    s.run(200, 0.024);
+    s.mark('merge');                        // the acceleration lane runs out here
+    s.run(360, 0.012);
+    s.mark('Canal Street overpass');
+    s.run(420, 0.004);
+    s.left(20, 720, 0);
+    s.run(480, -0.002);
+    s.mark('Junction 14 overpass');
+    s.run(440, -0.004);
+    s.right(16, 800, -0.004);
+    s.run(400, -0.006);
 
-    // --- Into Cloverdale ----------------------------------------------------
-    s.mark('town line');
-    s.left(78, 120, 0);
+    // --- Off at exit 14 ------------------------------------------------------
+    s.mark('exit');
+    s.run(260, -0.01);                      // deceleration lane
+    s.mark('off ramp');
+    s.right(76, 68, -0.016);
+    s.run(180, -0.014);
+
+    // --- Meridian Avenue -----------------------------------------------------
+    s.mark('Meridian settled');
+    s.run(240, -0.008);
+    s.mark('Meridian & Canal');
+    s.run(320, -0.004);
+    s.weave(16, 380, -0.002);
     s.run(280, 0);
-    s.mark('Beltline Connector');
-    s.run(260, 0);
-    s.weave(18, 460, 0);
-    s.run(120, 0);
-    s.mark('Maple Street');
-    s.run(300, 0);
-    s.mark('Fairview Drive');
+    s.mark('Tanner Street');
+    s.run(320, 0);
+    s.mark('onto Foundry Road');
+    s.right(88, 66, 0);                     // right at the light onto Foundry Road
     s.run(240, 0);
-    s.right(22, 420, 0);
-    s.run(180, 0);
-    s.mark('Cement Plant Road');
-    s.run(230, 0);
-    s.mark('Beltline underpass');
-    s.run(170, 0);
-    s.mark('Sycamore Lane');
-    s.run(240, 0);
-    s.left(20, 440, 0);
-    s.run(200, 0);
-    s.mark('Cloverdale Center');
-    s.run(300, 0);
-    s.mark('Substation Access');
-    s.run(140, 0);
 
-    // --- In at the gate -----------------------------------------------------
+    // --- Foundry Road, out to Northgate --------------------------------------
+    s.mark('Kiln Street');
+    s.run(300, -0.004);
+    s.mark('Northgate underpass');          // the low one
+    s.run(280, -0.004);
+    s.mark('Substation Access');
+    s.run(200, -0.002);
+
+    // --- In at the gate ------------------------------------------------------
     s.mark('substation turn');
-    s.right(88, 110, -0.005);
-    s.run(260, -0.005);
+    s.right(86, 55, -0.004);
+    s.run(260, -0.004);
     s.mark('substation');
-    s.run(180, 0);                         // yard beyond the delivery point
+    s.run(180, 0);                          // yard beyond the delivery point
 
     return s;
   }
@@ -441,7 +504,7 @@ export class Route {
     return this.corridor.limitMph(s);
   }
 
-  /** What kind of road this is: rural, mountain, suburban or industrial. */
+  /** What kind of road this is: industrial, urban, downtown, ramp or freeway. */
   kindAt(s) {
     return this.corridor.kind(s);
   }
@@ -583,10 +646,13 @@ export class Route {
   }
 
   /**
-   * Signed curvature at arc length `s`, 1/metres. Positive turns right.
+   * Signed curvature at arc length `s`, 1/metres. Positive turns **left**.
    *
    * The sign is what lets an AI driver point its front wheels the way the road
-   * actually goes instead of tracking the centreline with the wheels straight.
+   * actually goes instead of tracking the centreline with the wheels straight,
+   * and it is a rotation about +Y like every other angle in this project -- so
+   * positive is counter-clockwise seen from above, which is a left turn. See the
+   * note on LOCAL_RIGHT in physics/Vehicle.js.
    */
   signedCurvatureAt(s, window = 30) {
     const h1 = this.headingAt(s - window / 2);

@@ -159,13 +159,13 @@ test('a locked differential sends torque to the wheel with grip', () => {
     // Settle, then pull against the split surface.
     for (let i = 0; i < 400; i++) rig.step(1 / 200, ground);
     rig.throttle = 1;
-    for (let i = 0; i < 200; i++) rig.step(1 / 200, ground);
+    for (let i = 0; i < 600; i++) rig.step(1 / 200, ground);
 
     const driven = rig.tractor.wheels.filter((w) => w.driven);
     const slick = driven.filter((w) => w.contactPoint.x < 0);
     const grippy = driven.filter((w) => w.contactPoint.x >= 0);
     const sum = (ws) => ws.reduce((a, w) => a + w.driveTorque, 0);
-    return { slick: sum(slick), grippy: sum(grippy), total: sum(driven) };
+    return { slick: sum(slick), grippy: sum(grippy), total: sum(driven), mph: rig.speedMph };
   };
 
   const open = drivenTorques(false);
@@ -184,12 +184,14 @@ test('a locked differential sends torque to the wheel with grip', () => {
   assert.ok(Math.abs(locked.grippy) > Math.abs(locked.slick) * 1.5,
     `locking sent ${locked.grippy.toFixed(0)} Nm to the gripping side vs ${locked.slick.toFixed(0)} to the slick side`);
 
-  // The open case is worth reading rather than just passing: the slick wheel
-  // spins up, drags the engine into the governor, and the fuel gets cut -- so
-  // the rig is left making negative torque while going nowhere. That is the
-  // whole reason the lock is on the dash.
-  assert.ok(Math.abs(locked.total) > Math.abs(open.total),
-    'the locked rig should be putting down more torque than the spinning open one');
+  // What the lock is actually for, and the only measure of it that means
+  // anything: ground made. The open rig's slick wheel spins up, drags the
+  // engine into the governor and has the fuel cut, so instantaneous torque
+  // flickers between full fuelling and nothing several times a second -- while
+  // the rig sits there. The locked one is going somewhere.
+  console.log(`  after three seconds: ${open.mph.toFixed(1)} mph open, ${locked.mph.toFixed(1)} mph locked`);
+  assert.ok(locked.mph > open.mph * 1.4,
+    `the locked rig should be making ground (${locked.mph.toFixed(1)} vs ${open.mph.toFixed(1)} mph)`);
 
   // And it is a split, not free torque: the total is unchanged.
   assert.ok(Math.abs(locked.total - locked.grippy - locked.slick) < 1e-6,
