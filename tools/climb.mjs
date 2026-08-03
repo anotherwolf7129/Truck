@@ -4,8 +4,9 @@ import { Route } from '../src/world/Route.js';
 import { Ground } from '../src/world/Ground.js';
 
 const route=new Route(), ground=new Ground(route);
-const rig=new Rig({cargo:{name:'t',mass:68000,size:new Vector3(3.66,3.60,8.40),centerHeight:2.35}});
-const s0=3250;
+const rig=new Rig({trailer: process.argv[3] ?? 'lowboy'});
+// The steepest sustained climb on the route: Prospect Hill, out of downtown.
+const s0=Number(process.argv[2] ?? 4820);
 rig.placeAt(route.positionAt(s0, route.convoyLaneOffset(s0), new Vector3()), route.headingAt(s0), ground);
 rig.air.psi=120; rig.air.parkingBrake=false;
 const dt=1/200;

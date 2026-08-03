@@ -153,6 +153,9 @@ export class HUD {
       ['AUTO', game.autoShift, 'ok'],
       ['R-STEER', Math.abs(rig.trailerSteerAngle) > 0.02, 'ok'],
       ['STEERMAN', rig.autoTrailerSteer, 'ok'],
+      // Only on a combination that has more than one engine on it, because on
+      // the others there is nothing to report.
+      ...(rig.spec.powerUnits > 1 ? [[`PUSH ×${rig.spec.powerUnits - 1}`, true, 'ok']] : []),
       ['MUTE', game.audio.muted, 'critical'],
     ];
     this.el.indicators.innerHTML = lamps
@@ -210,12 +213,21 @@ export class HUD {
     const cargo = rig.cargo;
     const widthFt = cargo.size.x * 3.28084;
     const heightM = rig.loadHeight ?? 0;
+    const lengthFt = (rig.combinationLength ?? 0) * 3.28084;
+    // A different trailer has a different number of axles, so the smoothed scale
+    // readings start again rather than being carried over from rows that no
+    // longer exist.
+    this._axleSmooth = null;
+    // The permit number and the trailer are the load's, not the route's, so the
+    // panel title changes with what is hooked on behind.
+    this.root.querySelector('#permit-title').textContent = `Permit ${rig.spec.permitNo}`;
     this.el.permit.innerHTML = `
       <div class="permit-row"><span>Load</span><span>${cargo.name}</span></div>
+      <div class="permit-row"><span>Trailer</span><span>${rig.spec.name}</span></div>
       <div class="permit-row"><span>Gross</span><span>${Math.round(rig.grossWeightLb).toLocaleString()} lb</span></div>
       <div class="permit-row"><span>Width</span><span>${widthFt.toFixed(1)} ft</span></div>
       <div class="permit-row"><span>Height</span><span>${(heightM * 3.28084).toFixed(2)} ft (${heightM.toFixed(2)} m)</span></div>
-      <div class="permit-row"><span>Length</span><span>87 ft combination</span></div>
+      <div class="permit-row"><span>Length</span><span>${lengthFt.toFixed(0)} ft combination</span></div>
       <div class="permit-row"><span>Route</span><span>${route.staging.name} &rarr; ${route.destination.name}</span></div>
     `;
   }
@@ -232,7 +244,7 @@ function formatClock(hour) {
 const TEMPLATE = /* html */`
 <div id="hud">
   <div class="panel top-left">
-    <div class="panel-title">Permit 24-0881-OS</div>
+    <div class="panel-title" id="permit-title">Permit</div>
     <div id="permit"></div>
   </div>
 

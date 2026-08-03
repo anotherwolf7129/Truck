@@ -2,12 +2,13 @@ import { Vector3, Group, Quaternion, Euler, Color, MathUtils } from 'three';
 import { RenderContext } from './render/Scene.js';
 import { WorldMesh } from './render/WorldMesh.js';
 import {
-  createTractor, createJeep, createLowboy, createWheel,
-  createPoliceCar, createPilotCar, createTrafficVehicle,
+  createTractor, createJeep, createTrailer, createWheel,
+  createPoliceCar, createPilotCar, createTrafficVehicle, disposeModel,
 } from './render/Models.js';
 import { Route } from './world/Route.js';
 import { Ground } from './world/Ground.js';
 import { Rig } from './physics/Rig.js';
+import { getTrailer, DEFAULT_TRAILER } from './physics/Trailers.js';
 import { ConvoyManager, Role } from './ai/Escort.js';
 import { TrafficManager } from './ai/Traffic.js';
 import { Input } from './core/Input.js';
@@ -33,7 +34,7 @@ const MAX_STEPS = 12;
 const CAMERAS = ['chase', 'cab', 'hood', 'trailer', 'cinematic'];
 
 export class Game {
-  constructor(canvas, hudRoot) {
+  constructor(canvas, hudRoot, { trailer = DEFAULT_TRAILER } = {}) {
     this.render = new RenderContext(canvas);
     this.input = new Input();
 
@@ -44,18 +45,11 @@ export class Game {
     this.render.scene.add(this.worldMesh.group);
 
     // --- The rig ------------------------------------------------------------
-    this.rig = new Rig({
-      cargo: {
-        name: 'Substation transformer, 400 MVA',
-        mass: 68000,
-        size: new Vector3(3.66, 3.60, 8.40),
-        centerHeight: 2.35,
-      },
-    });
+    this.trailerSpec = getTrailer(trailer);
+    this.rig = new Rig({ trailer: this.trailerSpec });
     // Overall height of the load above the road, which is what the permit and
     // every bridge on the route care about.
-    this.loadHeight = 0.55 + this.rig.cargo.size.y;
-    this.rig.loadHeight = this.loadHeight;
+    this.loadHeight = this.rig.loadHeight;
 
     this.buildRigVisuals();
 
@@ -121,13 +115,12 @@ export class Game {
   buildRigVisuals() {
     this.unitVisuals = [];
 
-    const specs = [
-      { unit: this.rig.tractor, mesh: createTractor() },
-      { unit: this.rig.jeep, mesh: createJeep() },
-      { unit: this.rig.trailer, mesh: createLowboy(this.rig.cargo, this.rig.trailer.comHeight) },
-    ];
+    const spec = this.rig.spec;
+    const parts = [{ unit: this.rig.tractor, mesh: createTractor() }];
+    if (this.rig.jeep) parts.push({ unit: this.rig.jeep, mesh: createJeep(spec.jeep) });
+    parts.push({ unit: this.rig.trailer, mesh: createTrailer(spec, this.rig.trailer.comHeight) });
 
-    for (const { unit, mesh } of specs) {
+    for (const { unit, mesh } of parts) {
       const group = new Group();
       group.add(mesh);
 
@@ -142,6 +135,42 @@ export class Game {
       this.render.scene.add(group);
       this.unitVisuals.push({ unit, group, body: mesh, wheelMeshes });
     }
+  }
+
+  /**
+   * Puts a different trailer under the tractor.
+   *
+   * The whole combination is rebuilt: the trailer decides how many bodies there
+   * are, how many wheels each has, how long the thing is and how many engines
+   * are pushing it, so there is nothing meaningful to keep. The escorts are told
+   * the new geometry because their station keeping is measured off the back of
+   * the load, and the lead car's height pole is reset to the new load height.
+   */
+  setTrailer(id) {
+    const spec = getTrailer(id);
+    if (spec === this.trailerSpec) return this;
+    this.trailerSpec = spec;
+
+    for (const vis of this.unitVisuals) {
+      this.render.scene.remove(vis.group);
+      disposeModel(vis.group);
+    }
+    this.rig = new Rig({ trailer: spec });
+    this.loadHeight = this.rig.loadHeight;
+    this.buildRigVisuals();
+
+    // The pole is set just above the load, so a taller load needs a taller pole.
+    for (const vis of this.escortVisuals) {
+      this.render.scene.remove(vis.mesh);
+      disposeModel(vis.mesh);
+    }
+    this.convoy = new ConvoyManager(this.route, this.rig);
+    this.convoy.radio.listeners.push((msg) => this.audio.chirp(msg.priority));
+    this.buildEscortVisuals();
+
+    this.hud.setPermit(this.rig, this.route);
+    this.reset();
+    return this;
   }
 
   buildEscortVisuals() {
@@ -163,8 +192,21 @@ export class Game {
   // Lifecycle
   // ---------------------------------------------------------------------------
 
+  /**
+   * Where the nose of the tractor stands at the start.
+   *
+   * The staging point is where the yard is, but the tail of the combination has
+   * to be on the route as well -- and the combination is anything from 64 to 249
+   * feet long. Starting a blade transporter at the lowboy's mark puts fifty
+   * metres of blade behind the beginning of the road, where the route clamps and
+   * every arc length behind the tractor is the same point.
+   */
+  get startS() {
+    return Math.max(this.route.staging.s, this.rig.combinationLength + 30);
+  }
+
   reset() {
-    const startS = this.route.staging.s;
+    const startS = this.startS;
     const pos = this.route.positionAt(startS, this.route.convoyLaneOffset(startS), new Vector3());
     const heading = this.route.headingAt(startS);
 
@@ -382,7 +424,7 @@ export class Game {
   endMove(outcome) {
     this.finished = true;
     this.scorecard.finish(outcome);
-    this.debrief.show(this.scorecard, this.route);
+    this.debrief.show(this.scorecard, this.route, this.rig);
   }
 
   // ---------------------------------------------------------------------------
@@ -607,16 +649,19 @@ export class Game {
       }
       case 'trailer': {
         // Looking forward over the load from behind, which is how you actually
-        // watch the rear axles track through a corner.
-        trailer.localToWorld(new Vector3(0, 2.6, -11.5), desiredPos);
-        trailer.localToWorld(new Vector3(0, 1.2, 6), lookAt);
+        // watch the rear axles track through a corner. Set off the trailer's own
+        // tail rather than a fixed distance: the tail is nine metres behind the
+        // pin on a step deck and forty behind it on the blade trailer.
+        const tail = this.rig.spec.tailZ;
+        trailer.localToWorld(new Vector3(0, 2.6, tail - 2.5), desiredPos);
+        trailer.localToWorld(new Vector3(0, 1.2, tail + 15), lookAt);
         stiffness = 8;
         break;
       }
       case 'cinematic': {
         // A slow drift alongside the load, roughly where an escort would ride.
         const angle = this.elapsed * 0.08;
-        const radius = 26;
+        const radius = 26 + this.rig.combinationLength * 0.35;
         desiredPos.copy(trailer.position).add(new Vector3(
           Math.cos(angle) * radius, 6 + Math.sin(angle * 0.7) * 3, Math.sin(angle) * radius
         ));
@@ -625,9 +670,10 @@ export class Game {
         break;
       }
       default: {
-        // Chase. The combination is 87 ft long, so the camera has to sit behind
-        // the *trailer*, not the tractor -- anchoring it to the cab puts it
-        // inside the load.
+        // Chase. The combination is between sixty and two hundred and fifty feet
+        // long, so the camera has to sit behind the *trailer*, not the tractor --
+        // anchoring it to the cab puts it inside the load -- and how far behind
+        // has to follow how much there is to frame.
         const looking = this.input.down('lookBack');
 
         // Midpoint of the whole combination, which is what we frame.
@@ -642,9 +688,9 @@ export class Game {
         if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, 1);
         fwd.normalize();
 
-        const back = looking ? 40 : -40;
-        desiredPos.copy(centre).addScaledVector(fwd, back);
-        desiredPos.y = centre.y + 13.5;
+        const range = 22 + this.rig.combinationLength * 0.75;
+        desiredPos.copy(centre).addScaledVector(fwd, looking ? range : -range);
+        desiredPos.y = centre.y + 6 + this.rig.combinationLength * 0.32;
 
         lookAt.copy(centre);
         lookAt.y += 1.2;
@@ -718,7 +764,7 @@ export class Game {
     const load = {
       lateral: this.convoyLateral,
       halfWidth: this.rig.cargo.size.x * 0.5,
-      length: this.convoy.convoyLength,
+      length: this.rig.combinationLength,
     };
     // A unit crossing to a side road looks before it swings over.
     this.convoy.traffic = this.traffic.vehicles;

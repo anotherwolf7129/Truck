@@ -5,6 +5,36 @@ import { CrossTraffic } from './CrossTraffic.js';
 const _v = new Vector3();
 const _dir = new Vector3();
 
+/**
+ * What the lead car says when the road ahead changes into something else.
+ *
+ * Each of these is the one thing the driver has to do about it, which on a city
+ * route is nearly always about lanes: which one the load belongs in, and what
+ * the units behind are covering while it is there.
+ */
+const ROAD_CHANGE_CALLS = {
+  urban: {
+    text: 'Two lanes each way ahead and a turn lane down the middle. Take the inside lane and hold it; '
+      + 'Unit 8 will sit on the kerb lane behind you.',
+  },
+  downtown: {
+    text: 'Downtown from here — kerbs hard against the lane, no shoulder, and a light every block. '
+      + 'Twenty-five is the sign and it is also as fast as you want to be.',
+  },
+  ramp: {
+    text: 'Ramp ahead. One lane, no room to correct on it, and the corner is the tightest thing on the route.',
+    priority: 'critical',
+  },
+  freeway: {
+    text: 'Acceleration lane, then three lanes each way. Get whatever speed you can before the paint runs out '
+      + 'and take the inside lane — barrier on your left, everybody else passing on your right.',
+  },
+  industrial: {
+    text: 'Back down to one lane each way. Anything coming the other way has to take the kerb for us again.',
+    priority: 'normal',
+  },
+};
+
 export const Role = {
   LEAD_POLICE: 'lead_police',
   LEAD_PILOT: 'lead_pilot',
@@ -273,12 +303,15 @@ export class ConvoyManager {
 
     this.blockades = route.junctions.map((j) => new Blockade(j, route));
 
-    // Station-keeping distances, metres relative to the load.
+    // Station-keeping distances, metres relative to the nose of the load. The
+    // two behind are measured off the *tail* instead, because the tail is
+    // twenty-three metres back on a lowboy and seventy-six on the blade
+    // transporter -- a fixed number puts the chase car inside the load.
     this.stations = {
       [Role.LEAD_POLICE]: 260,
       [Role.LEAD_PILOT]: 140,
-      [Role.REAR_PILOT]: -95,
-      [Role.REAR_POLICE]: -170,
+      [Role.REAR_PILOT]: -70,
+      [Role.REAR_POLICE]: -145,
     };
 
     // Which lane each unit rides in, counting outward from the centreline. On a
@@ -331,7 +364,7 @@ export class ConvoyManager {
       v.state = 'station';
       v.assignment = null;
       v.lightsOn = v.isPolice;
-      const station = s + this.stations[v.role];
+      const station = s + this.stationOffset(v.role);
       v.place(station, this.stationLateral(v, station));
     }
     for (const b of this.blockades) {
@@ -344,6 +377,18 @@ export class ConvoyManager {
     }
     this.route.signals?.reset?.();
     this._announced.clear();
+  }
+
+  /**
+   * Where a unit's station is, relative to the nose of the load.
+   *
+   * The two units behind sit a fixed distance off the *tail*, which moves with
+   * the trailer: a chase car ninety-five metres behind the nose is fifteen
+   * metres behind a lowboy and twenty metres inside a blade transporter.
+   */
+  stationOffset(role) {
+    const offset = this.stations[role] ?? 0;
+    return offset < 0 ? offset - this.convoyLength : offset;
   }
 
   /** The lane centre a unit rides in at arc length `s`. */
@@ -600,7 +645,7 @@ export class ConvoyManager {
     }
 
     // No assignment: hold station, or catch back up after a release.
-    const station = this.convoyS + this.stations[unit.role];
+    const station = this.convoyS + this.stationOffset(unit.role);
     const urgency = unit.state === 'rejoin' ? 1.8 : 1;
     // A unit coming back up from a released junction has the whole convoy and
     // the queue behind it in the way, so it makes the run in the closed lane and
@@ -616,7 +661,7 @@ export class ConvoyManager {
   }
 
   updatePilot(dt, unit) {
-    const station = this.convoyS + this.stations[unit.role];
+    const station = this.convoyS + this.stationOffset(unit.role);
     unit.targetLateral = this.stationLateral(unit, station);
     unit.lightsOn = true;
     unit.driveTo(dt, station, this.convoySpeed, 1.1);
@@ -694,18 +739,13 @@ export class ConvoyManager {
     if (this._announced.has(key)) return;
     this._announced.add(key);
 
-    if (ahead === 'suburban') {
+    const call = ROAD_CHANGE_CALLS[ahead];
+    if (call) {
+      this.radio.say('Lead', call.text, { priority: call.priority ?? 'warning', time: this.time });
+    } else if (here === 'freeway') {
       this.radio.say('Lead',
-        'Town line ahead — two lanes each way and a turn lane. Take the inside lane and hold it; '
-        + 'Unit 8 will sit on the kerb lane behind you.',
+        'Off at the exit. Ramp speed is thirty and the lanes drop to one — ease right as the paint runs out.',
         { priority: 'warning', time: this.time });
-    } else if (here === 'suburban') {
-      this.radio.say('Lead',
-        'Lanes drop back to one at the substation approach. Ease left as the paint runs out.',
-        { priority: 'warning', time: this.time });
-    } else if (ahead === 'mountain') {
-      this.radio.say('Lead', 'Road narrows on the climb — no shoulder to speak of from here up.',
-        { time: this.time });
     }
   }
 

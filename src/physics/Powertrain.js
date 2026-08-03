@@ -75,7 +75,16 @@ export class Powertrain {
     drivelineEfficiency = 0.92,
     idleRpm = 600,
     maxRpm = 2100,
+    powerUnits = 1,
   } = {}) {
+    // How many prime movers are on the combination. A dual-lane move has a
+    // second tractor on the drawbar and push trucks on the back, because 300
+    // tonnes does not start on one 600 hp engine. They are all geared to the
+    // same road speed and shift together, so one engine model covers all of
+    // them; what the extras contribute is tractive effort through their own
+    // tires, which `Rig` applies to the combination rather than to this
+    // tractor's drive axles.
+    this.powerUnits = powerUnits;
     this.finalDrive = finalDrive;
     this.engineInertia = engineInertia;
     this.drivelineEfficiency = drivelineEfficiency;

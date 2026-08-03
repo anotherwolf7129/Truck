@@ -30,8 +30,9 @@ export class Debrief {
   /**
    * @param scorecard  a finished Scorecard
    * @param route      the route, for the destination name
+   * @param rig        the combination, for the permit it was moved under
    */
-  show(scorecard, route) {
+  show(scorecard, route, rig = null) {
     const title = OUTCOME_TITLE[scorecard.outcome] ?? 'Move ended';
     const lines = scorecard.lines
       .map((l) => `
@@ -51,7 +52,8 @@ export class Debrief {
 
     this.root.innerHTML = /* html */`
       <div class="start-card debrief-card ${scorecard.grade}">
-        <div class="sub">Permit 24-0881-OS &mdash; ${route.destination.name}</div>
+        <div class="sub">Permit ${rig?.spec?.permitNo ?? ''} &mdash; ${rig?.spec?.name ?? ''}
+          &mdash; ${route.destination.name}</div>
         <h1>${title}</h1>
         <p class="debrief-verdict">${scorecard.verdictText}</p>
 

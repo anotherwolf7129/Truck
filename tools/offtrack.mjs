@@ -67,7 +67,7 @@ function corner({ auto, manual = 0, mph = 8, steer = 0.55, seconds = 34 }) {
   rig.steerInput = steer;
 
   // Three points: the steer axle, the gooseneck the steerman is nulling the
-  // trailer against, and the lowboy's rearmost axle.
+  // trailer against, and the trailer's rearmost axle.
   const rearWheel = rig.trailer.wheels
     .reduce((a, w) => (w.position.z < a.position.z ? w : a), rig.trailer.wheels[0]);
   const front = [];
@@ -87,7 +87,7 @@ function corner({ auto, manual = 0, mph = 8, steer = 0.55, seconds = 34 }) {
     if (i < settle) continue;
 
     front.push(rig.tractor.body.localToWorld(new Vector3(0, 0, rig.wheelbase * 0.5), new Vector3()));
-    neck.push(rig.trailer.body.localToWorld(new Vector3(0, 0, 6.30), new Vector3()));
+    neck.push(rig.trailer.body.localToWorld(new Vector3(0, 0, rig.spec.couplingZ), new Vector3()));
     rear.push(rig.trailer.body.localToWorld(rearWheel.position.clone(), new Vector3()));
     rearAngle = Math.max(rearAngle, Math.abs(rig.trailerSteerAngle));
     articulation = Math.max(articulation, Math.abs(rig.yawB.angle));

@@ -1,13 +1,14 @@
 /**
  * The road's cross-section, and how it changes along the route.
  *
- * A permit route is not one road. It starts as a two-lane county highway, climbs
- * a ridge on something narrower than that, and comes into town as a five-lane
- * suburban arterial with a centre turn lane and a signal every quarter mile. The
- * load has to be routed down all of it, and almost everything the other vehicles
- * do -- which lane they sit in, whether they can get past the load at all,
- * whether they have to take the shoulder or can simply move over one -- falls out
- * of how many lanes there are at that point.
+ * A permit route is not one road. It leaves the port on a two-lane industrial
+ * spur, works across the city on five-lane arterials with a centre turn lane and
+ * a signal every quarter mile, goes up a single-lane ramp onto an interstate
+ * three lanes wide behind a barrier, and comes off it again. The load has to be
+ * routed down all of it, and almost everything the other vehicles do -- which
+ * lane they sit in, whether they can get past the load at all, whether they have
+ * to take the kerb or can simply move over one -- falls out of how many lanes
+ * there are at that point.
  *
  * So the cross-section is a first-class part of the world rather than a pair of
  * constants. Sections are declared at arc lengths and blended across a taper, so
@@ -37,7 +38,10 @@ export class Corridor {
 
     // Reused so that a per-frame query for every vehicle on the road does not
     // allocate.
-    this._out = { lanes: 1, median: 0, shoulder: 2.4, limitMph: 45, kind: 'rural', name: '' };
+    this._out = {
+      lanes: 1, median: 0, shoulder: 2.4, limitMph: 45,
+      kind: 'urban', name: '', centre: 'double-yellow',
+    };
 
     this.maxHalfWidth = 0;
     this.maxLanes = 1;
@@ -120,6 +124,10 @@ export class Corridor {
     out.limitMph = dominant.limitMph;
     out.kind = dominant.kind;
     out.name = dominant.name;
+    // What is down the middle of the road. A painted centreline and a concrete
+    // barrier are both "the median" as far as lane geometry is concerned, and
+    // completely different things to look at or to swing a load across.
+    out.centre = dominant.centre ?? (dominant.median >= 1 ? 'turn-lane' : 'double-yellow');
     return out;
   }
 
@@ -164,9 +172,25 @@ export class Corridor {
     return this.at(s).limitMph;
   }
 
-  /** 'rural' | 'mountain' | 'suburban' | 'industrial' */
+  /** 'industrial' | 'urban' | 'downtown' | 'ramp' | 'freeway' */
   kind(s) {
     return this.at(s).kind;
+  }
+
+  /** 'double-yellow' | 'turn-lane' | 'barrier' — what runs down the middle. */
+  centre(s) {
+    return this.at(s).centre;
+  }
+
+  /**
+   * True where the road runs between buildings rather than past them.
+   *
+   * Kerbs, footways, street lighting, the graded shelf the whole place is built
+   * on and how busy the road is all follow from this rather than from each
+   * caller keeping its own list of which kinds count as town.
+   */
+  static isBuiltUp(kind) {
+    return kind === 'urban' || kind === 'downtown' || kind === 'industrial';
   }
 
   /** Points where the posted limit changes, for signing the route. */

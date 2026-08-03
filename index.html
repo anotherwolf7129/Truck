@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f2c200'/%3E%3Ctext y='23' x='16' text-anchor='middle' font-size='20'%3E%F0%9F%9A%9B%3C/text%3E%3C/svg%3E" />
   <title>Heavy Haul — Oversize Load Convoy</title>
-  <meta name="description" content="A heavy haul simulator: 212,000 lb superload, multi-axle lowboy, police and pilot car escorts." />
+  <meta name="description" content="A heavy haul simulator: superloads on five trailers, escorted across a city and onto the interstate." />
 </head>
 <body>
   <canvas id="view" tabindex="0"></canvas>
@@ -15,23 +15,25 @@
 
   <div id="start-screen">
     <div class="start-card">
-      <div class="sub">Bennett Heavy Haul &mdash; Permit 24-0881-OS</div>
-      <h1>400 MVA transformer to Cloverdale Substation</h1>
+      <div class="sub">Cascade Heavy Haul &mdash; Anchor Point Terminal to Northgate</div>
+      <h1>Eight miles across the city</h1>
       <p>
-        212,000 lb gross on a four-axle lowboy behind a jeep dolly. Twelve feet wide,
-        which is wider than the lane you are driving in, so oncoming traffic has to
-        get off the road. Two police units run ahead and leapfrog the junctions;
-        a lead pilot car carries the height pole, and a chase car keeps everyone
-        off your tail.
+        Out of the port gate, six turns at signalised intersections, downtown,
+        over Prospect Hill on a nine percent descent, up the loop ramp onto
+        I&#8209;118, off at exit 14 and out to the Northgate substation. Two police
+        units run ahead and leapfrog the junctions, taking each light so the load
+        never meets a red; a lead pilot car carries the height pole, and a chase
+        car keeps everyone off your tail.
       </p>
       <p>
-        Seven and a half miles. There is a nine percent grade off the ridge &mdash;
-        gear down and use the compression brake, because your service brakes will
-        fade long before the bottom. The switchback needs the lowboy's rear axles
-        steered; the steerman is on the box by default and will follow you round,
-        but Q and E take them off him the moment you touch them.
-        Watch the rollover meter more than the speedometer.
+        Pick what you are hauling. It changes everything &mdash; how many axles are
+        under the load, how far the tail is behind you, how much of it the rear
+        steer can save you at an intersection, and whether one engine can move it
+        at all. Watch the rollover meter more than the speedometer, and gear down
+        for the hill.
       </p>
+
+      <div id="trailer-picker" class="trailers"></div>
 
       <div class="controls">
         <div><span>Steer</span><kbd>A</kbd> <kbd>D</kbd></div>
@@ -52,6 +54,10 @@
       </div>
 
       <button id="start-button">Release the brakes</button>
+      <div class="start-note">
+        Or <code>?trailer=blade</code> in the address bar, and
+        <code>game.setTrailer('duallane')</code> from the console.
+      </div>
     </div>
   </div>
 

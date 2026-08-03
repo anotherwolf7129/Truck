@@ -6,7 +6,7 @@
  * it, which means crossing the carriageway and shutting the highway down for the
  * few seconds that takes. At a signal he does not: he takes the light, holds the
  * mainline green and every other approach red, and the whole intersection is his
- * without anybody driving across the road. That is why a suburban arterial full
+ * without anybody driving across the road. That is why a city arterial full
  * of lights is quicker to escort than a country road full of farm lanes, and it
  * is the difference this class exists to express.
  */

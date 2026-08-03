@@ -10,6 +10,16 @@ const _centre = {};
 const _offset = {};
 
 /**
+ * How far back from the kerb the ground was graded flat when the place was
+ * built, in metres, by what kind of road it is.
+ *
+ * Exported because the renderer needs the same number: this is where the city
+ * stops and the country starts, so it decides both what the wheels find and
+ * where the ground stops being drawn as paving.
+ */
+export const BUILT_UP_SHELF = { downtown: 120, urban: 64, industrial: 70 };
+
+/**
  * Deterministic value noise. Seeded and hash-based so the terrain is identical
  * every run and needs no stored heightmap.
  */
@@ -71,11 +81,13 @@ export class Ground {
   /**
    * Terrain elevation away from the road corridor.
    *
-   * Four scales. The first is new and is the one that gives the place a skyline:
-   * a three-kilometre wavelength worth about fifty metres of relief, which is
-   * what turns the view from the ridge from a flat green plain into a valley
-   * with hills on the far side of it. Below that the old three carry the rolling
-   * ground, the field-scale undulation and the surface roughness the tires find.
+   * Four scales. The broadest is the one that gives the place a horizon: a
+   * three-kilometre wavelength worth about fifty metres of relief, which is what
+   * puts hills behind the city instead of a flat green plain. Below that the
+   * other three carry the rolling ground the freeway runs over, the undulation
+   * at field scale and the surface roughness the tires find. Inside the city
+   * none of it reaches the road -- the shelf above flattens it -- which is the
+   * point: a city is built on ground somebody levelled.
    *
    * The amplitudes are larger than they read: fbm returns a value that spends
    * most of its time near the middle of its range, so the ±23 m the broad term
@@ -97,11 +109,13 @@ export class Ground {
    * the road grade blends into the terrain over a cut-and-fill band so the
    * shoulder does not end in a cliff.
    *
-   * Built-up ground gets a graded shelf first. A country road can run along the
-   * top of a fill with the ground falling away from the shoulder, but a street
-   * with footways, driveways and houses on it cannot -- everything within a
-   * couple of lot depths of the kerb was levelled when the place was built, and
-   * without that the whole town ends up pitched down a 45 degree bank.
+   * Built-up ground gets a graded shelf first, and how wide that shelf is
+   * depends on what is standing on it. A freeway can run along the top of a fill
+   * with the ground falling away from the shoulder, but a street with footways,
+   * kerbs and buildings on it cannot -- everything within a block of the kerb
+   * was levelled when the place was built. Downtown the block is deeper still,
+   * because what is on it is a city rather than a row of houses, and a tower
+   * standing on a 45 degree bank is not a tower anybody built.
    */
   heightAt(x, z, projection = null) {
     const route = this.route;
@@ -113,7 +127,7 @@ export class Ground {
 
     if (dist <= half) return roadY;
 
-    const shelf = route.kindAt(_proj.s) === 'suburban' ? 46 : 0;
+    const shelf = BUILT_UP_SHELF[route.kindAt(_proj.s)] ?? 0;
     if (dist <= half + shelf) return roadY;
 
     // Cut and fill, over a distance that follows how much of it there is. A road
@@ -136,7 +150,7 @@ export class Ground {
   /**
    * A smooth 0..1 field used to tint the ground.
    *
-   * Farmland is not one colour. Without something at field scale the terrain
+   * Open ground is not one colour. Without something at field scale the terrain
    * reads as a green sheet however much relief is under it, because every
    * triangle is the same shade as its neighbours.
    */
@@ -148,8 +162,8 @@ export class Ground {
    * Which surface a point is on, from how far it sits off the centreline.
    *
    * Measured against the pavement at that arc length rather than a fixed width:
-   * the same four metres off centre is the middle of the inside lane in town and
-   * a wheel in the gravel on the ridge.
+   * the same four metres off centre is the middle of the inside lane on the
+   * arterial and a wheel in the gravel on the ramp.
    */
   surfaceAt(dist, s) {
     const route = this.route;

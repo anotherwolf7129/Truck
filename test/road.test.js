@@ -20,9 +20,11 @@ test('the route is more than one road', () => {
   const kinds = new Set();
   for (let s = 0; s < route.length; s += 50) kinds.add(route.kindAt(s));
   console.log(`  ${[...kinds].join(', ')}`);
-  assert.ok(kinds.has('rural'), 'no two-lane county road');
-  assert.ok(kinds.has('suburban'), 'the route never reaches town');
-  assert.ok(kinds.size >= 3, 'the whole route is the same kind of road');
+  assert.ok(kinds.has('urban'), 'no city arterial');
+  assert.ok(kinds.has('downtown'), 'the route never reaches downtown');
+  assert.ok(kinds.has('freeway'), 'the route never gets on the interstate');
+  assert.ok(kinds.has('ramp'), 'the interstate is reached without a ramp');
+  assert.ok(kinds.size >= 4, 'the whole route is the same kind of road');
 });
 
 /** The middle of the section the corridor calls by this name. */
@@ -34,17 +36,49 @@ function midOf(kind) {
   return (sections[i].s + end) / 2;
 }
 
-test('the town has two lanes each way and a turn lane between them', () => {
-  const townS = midOf('suburban');
-  assert.strictEqual(route.kindAt(townS), 'suburban');
-  assert.strictEqual(route.laneCountAt(townS), 2);
-  assert.ok(route.medianAt(townS) > 3, 'no centre turn lane through town');
+test('a city arterial has two lanes each way and a turn lane between them', () => {
+  const cityS = midOf('urban');
+  assert.strictEqual(route.laneCountAt(cityS), 2);
+  assert.ok(route.medianAt(cityS) > 3, 'no centre turn lane on the arterial');
+  assert.strictEqual(route.corridor.centre(cityS), 'turn-lane');
 
-  // The county road is what it always was.
-  const ruralS = midOf('rural');
-  assert.strictEqual(route.laneCountAt(ruralS), 1);
-  assert.strictEqual(route.medianAt(ruralS), 0);
-  assert.strictEqual(route.convoyLaneOffset(ruralS).toFixed(2), (route.laneWidth * 0.5).toFixed(2));
+  // The industrial spur out of the terminal is one lane each way, which is what
+  // leaves oncoming traffic nowhere to be but the kerb.
+  const yardS = midOf('industrial');
+  assert.strictEqual(route.laneCountAt(yardS), 1);
+  assert.strictEqual(route.medianAt(yardS), 0);
+  assert.strictEqual(route.convoyLaneOffset(yardS).toFixed(2), (route.laneWidth * 0.5).toFixed(2));
+});
+
+test('the interstate is three lanes each way behind a barrier', () => {
+  const freewayS = midOf('freeway');
+  assert.strictEqual(route.laneCountAt(freewayS), 3);
+  assert.strictEqual(route.corridor.centre(freewayS), 'barrier');
+  assert.strictEqual(route.speedLimitAt(freewayS), 55);
+  // The kerb lane is a whole road's width away from the load's lane, which is
+  // why traffic can simply go past a move that shuts a county road down.
+  const inside = route.convoyLaneOffset(freewayS);
+  const kerb = route.laneOffsetAt(freewayS, 1, 2);
+  assert.ok(kerb - inside > 7, 'the outside lane is not clear of the load');
+});
+
+test('the ramp reaches freeway width before the lanes open', () => {
+  // A merge is exactly this: the pavement is already three lanes wide while
+  // there is still only one lane painted to drive in, and the acceleration lane
+  // is the length of the taper.
+  const merge = route.survey.at('merge');
+  assert.strictEqual(route.laneCountAt(merge - 100), 1, 'the lanes opened before the merge');
+  assert.ok(route.halfWidthAt(merge) > route.halfWidthAt(merge - 100) + 2,
+    'the pavement did not start widening ahead of the merge');
+
+  let full = null;
+  for (let s = merge - 200; s < merge + 500 && full === null; s += 2) {
+    if (route.laneCountAt(s) >= 3) full = s;
+  }
+  console.log(`  three lanes ${(full - merge).toFixed(0)} m past the merge point, `
+    + `pavement ${route.halfWidthAt(merge).toFixed(1)} m wide there against `
+    + `${route.halfWidthAt(merge - 100).toFixed(1)} m on the ramp`);
+  assert.ok(full !== null && full > merge, 'the freeway never reached three lanes');
 });
 
 test('lanes are laid out side by side without overlapping', () => {
@@ -73,21 +107,18 @@ test('lanes are laid out side by side without overlapping', () => {
 
 test('the road widens over a taper rather than in one step', () => {
   // The pavement has to grow smoothly -- a step in the road edge is a step in
-  // the terrain skirt and in what counts as off the road -- while the extra lane
-  // only opens once there is a whole one of it.
-  const townLine = route.corridor.sections.find((sec) => sec.kind === 'suburban').s;
+  // the terrain skirt and in what counts as off the road. Every boundary on the
+  // route is checked rather than one remembered one: there are twenty of them
+  // now, half are the widening either side of an intersection the load turns
+  // at, and the worst of them is a lane drop and a shoulder drop at once.
   let maxJump = 0;
-  let opened = null;
-  for (let s = townLine - 300; s < townLine + 300; s += 2) {
+  let worstAt = 0;
+  for (let s = 2; s <= route.length; s += 2) {
     const jump = Math.abs(route.halfWidthAt(s) - route.halfWidthAt(s - 2));
-    maxJump = Math.max(maxJump, jump);
-    if (opened === null && route.laneCountAt(s) > 1) opened = s;
+    if (jump > maxJump) { maxJump = jump; worstAt = s; }
   }
-  console.log(`  second lane opens at ${opened} m, widest step ${(maxJump * 100).toFixed(1)} cm per 2 m`);
+  console.log(`  widest step ${(maxJump * 100).toFixed(1)} cm per 2 m, at ${worstAt.toFixed(0)} m`);
   assert.ok(maxJump < 0.12, `the pavement edge jumps ${maxJump.toFixed(2)} m in two metres`);
-  assert.ok(opened !== null, 'the second lane never opened');
-  // Full width by the time the lane is usable, not before.
-  assert.ok(route.laneCountAt(opened - 20) === 1, 'the lane opened before the taper finished');
 });
 
 test('the advisory speed never exceeds the posted limit', () => {
@@ -102,8 +133,8 @@ test('the advisory speed never exceeds the posted limit', () => {
 
 test('a corridor blends between sections from both directions consistently', () => {
   const c = new Corridor([
-    { s: 0, name: 'a', kind: 'rural', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45 },
-    { s: 1000, name: 'b', kind: 'suburban', lanes: 2, median: 3.7, shoulder: 1.6, limitMph: 35, taper: 100 },
+    { s: 0, name: 'a', kind: 'industrial', lanes: 1, median: 0, shoulder: 2.4, limitMph: 45 },
+    { s: 1000, name: 'b', kind: 'urban', lanes: 2, median: 3.7, shoulder: 1.6, limitMph: 35, taper: 100 },
   ]);
   const before = c.at(999.9);
   const after = c.at(1000.1);
