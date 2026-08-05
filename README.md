@@ -1,6 +1,6 @@
 # Heavy Haul
 
-A browser simulator for the kind of driving you described: a superload on a
+A browser simulator for heavy-load driving: a superload on a
 multi-axle trailer, with police units and pilot cars running as a convoy —
 taking the lights ahead of you, blocking side roads, and leapfrogging to the
 next junction once you are through. Eight miles across a city, six turns at
